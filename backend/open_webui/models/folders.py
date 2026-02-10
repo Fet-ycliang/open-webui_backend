@@ -3,13 +3,13 @@ import time
 import uuid
 from typing import Optional
 
-from open_webui.internal.db import Base, get_db
+from open_webui.internal.db import Base, get_db, UnicodeText
 from open_webui.models.chats import Chats
 
 from open_webui.env import SRC_LOG_LEVELS
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Column, Text, JSON, Boolean
-from open_webui.utils.access_control import get_permissions
+
 
 
 log = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ class Folder(Base):
     id = Column(Text, primary_key=True)
     parent_id = Column(Text, nullable=True)
     user_id = Column(Text)
-    name = Column(Text)
+    name = Column(UnicodeText)  # 使用 UnicodeText 處理中文文件夾名稱
     items = Column(JSON, nullable=True)
     meta = Column(JSON, nullable=True)
     is_expanded = Column(Boolean, default=False)

@@ -46,27 +46,6 @@ logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 ####################################
 
 
-# Function to run the alembic migrations
-def run_migrations():
-    log.info("Running migrations")
-    try:
-        from alembic import command
-        from alembic.config import Config
-
-        alembic_cfg = Config(OPEN_WEBUI_DIR / "alembic.ini")
-
-        # Set the script location dynamically
-        migrations_path = OPEN_WEBUI_DIR / "migrations"
-        alembic_cfg.set_main_option("script_location", str(migrations_path))
-
-        command.upgrade(alembic_cfg, "head")
-    except Exception as e:
-        log.exception(f"Error running migrations: {e}")
-
-
-run_migrations()
-
-
 class Config(Base):
     __tablename__ = "config"
 
@@ -103,9 +82,14 @@ def reset_config():
 
 # When initializing, check if config.json exists and migrate it to the database
 if os.path.exists(f"{DATA_DIR}/config.json"):
-    data = load_json_config()
-    save_to_db(data)
-    os.rename(f"{DATA_DIR}/config.json", f"{DATA_DIR}/old_config.json")
+    try:
+        data = load_json_config()
+        save_to_db(data)
+        os.rename(f"{DATA_DIR}/config.json", f"{DATA_DIR}/old_config.json")
+    except Exception as e:
+        # If database table doesn't exist, skip migration and keep using config.json
+        log.warning(f"Could not migrate config.json to database (table may not exist): {e}")
+        pass
 
 DEFAULT_CONFIG = {
     "version": 0,
@@ -161,9 +145,15 @@ DEFAULT_CONFIG = {
 
 
 def get_config():
-    with get_db() as db:
-        config_entry = db.query(Config).order_by(Config.id.desc()).first()
-        return config_entry.data if config_entry else DEFAULT_CONFIG
+    try:
+        with get_db() as db:
+            config_entry = db.query(Config).order_by(Config.id.desc()).first()
+            return config_entry.data if config_entry else DEFAULT_CONFIG
+    except Exception as e:
+        # If database table doesn't exist or any other database error occurs,
+        # return default config to allow application to start
+        log.warning(f"Could not load config from database (table may not exist): {e}")
+        return DEFAULT_CONFIG
 
 
 CONFIG_DATA = get_config()
@@ -527,7 +517,7 @@ OAUTH_ALLOWED_ROLES = PersistentConfig(
 OAUTH_ADMIN_ROLES = PersistentConfig(
     "OAUTH_ADMIN_ROLES",
     "oauth.admin_roles",
-    [role.strip() for role in os.environ.get("OAUTH_ADMIN_ROLES", "admin").split(",")],
+    [role.strip for role in os.environ.get("OAUTH_ADMIN_ROLES", "admin").split(",")],
 )
 
 OAUTH_ALLOWED_DOMAINS = PersistentConfig(
@@ -903,6 +893,17 @@ try:
 except Exception:
     pass
 OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+
+
+####################################
+# MCPO (Model Context Protocol)
+####################################
+
+
+MCPO_API_URL = PersistentConfig(
+    "MCPO_API_URL", "mcpo.api_url", os.environ.get("MCPO_API_URL", "")
+)
+
 
 ####################################
 # TOOL_SERVERS
@@ -1660,7 +1661,8 @@ Ensure that the tools are effectively utilized to achieve the highest-quality an
 VECTOR_DB = os.environ.get("VECTOR_DB", "chroma")
 
 # Chroma
-CHROMA_DATA_PATH = f"{DATA_DIR}/vector_db"
+# 支援通過環境變數指定外部向量資料庫路徑
+CHROMA_DATA_PATH = os.environ.get("CHROMA_DATA_PATH", f"{DATA_DIR}/vector_db")
 
 if VECTOR_DB == "chroma":
     import chromadb
@@ -1723,6 +1725,20 @@ if VECTOR_DB == "pgvector" and not PGVECTOR_DB_URL.startswith("postgres"):
 PGVECTOR_INITIALIZE_MAX_VECTOR_LENGTH = int(
     os.environ.get("PGVECTOR_INITIALIZE_MAX_VECTOR_LENGTH", "1536")
 )
+
+# Azure AI Search
+AZURE_AI_SEARCH_ENDPOINT = os.environ.get("AZURE_AI_SEARCH_ENDPOINT", "")
+AZURE_AI_SEARCH_API_KEY = os.environ.get("AZURE_AI_SEARCH_API_KEY", "")
+AZURE_AI_SEARCH_API_VERSION = os.environ.get("AZURE_AI_SEARCH_API_VERSION", "2024-07-01")
+AZURE_AI_SEARCH_INDEX_PREFIX = os.environ.get(
+    "AZURE_AI_SEARCH_INDEX_PREFIX", "open_webui_collections"
+)
+
+if VECTOR_DB == "azure_ai_search":
+    if not AZURE_AI_SEARCH_ENDPOINT or not AZURE_AI_SEARCH_API_KEY:
+        raise ValueError(
+            "Azure AI Search requires setting AZURE_AI_SEARCH_ENDPOINT and AZURE_AI_SEARCH_API_KEY environment variables."
+        )
 
 ####################################
 # Information Retrieval (RAG)

@@ -91,6 +91,7 @@ from open_webui.env import (
 )
 from open_webui.constants import TASKS
 
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -100,6 +101,11 @@ log.setLevel(SRC_LOG_LEVELS["MAIN"])
 async def chat_completion_tools_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel, models, tools
 ) -> tuple[dict, dict]:
+
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 診斷] - [可用工具數量]: {len(tools)}")
+        log.info(f"=== [MCP Tool 診斷] - [可用工具列表]: {list(tools.keys())}")
+
     async def get_content_from_response(response) -> Optional[str]:
         content = None
         if hasattr(response, "body_iterator"):
@@ -143,6 +149,10 @@ async def chat_completion_tools_handler(
         models,
     )
 
+    # 添加任務模型日誌
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 診斷] - [任務模型ID]: {task_model_id}")
+
     skip_files = False
     sources = []
 
@@ -157,9 +167,17 @@ async def chat_completion_tools_handler(
     tools_function_calling_prompt = tools_function_calling_generation_template(
         template, tools_specs
     )
+
+    # 添加最終提示日誌
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 診斷] - [最終工具調用提示]: {tools_function_calling_prompt}")
+
     payload = get_tools_function_calling_payload(
         body["messages"], task_model_id, tools_function_calling_prompt
     )
+
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 診斷] - [發送給模型的完整負載]: {json.dumps(payload, ensure_ascii=False, indent=2)}")
 
     try:
         response = await generate_chat_completion(request, form_data=payload, user=user)
@@ -167,15 +185,38 @@ async def chat_completion_tools_handler(
         content = await get_content_from_response(response)
         log.debug(f"{content=}")
 
+        if DEBUG_MODE:
+            log.info(f"=== [MCP Tool 診斷] - [回應長度]: {len(content) if content else 0} 字符")
+            log.info(f"=== [MCP Tool 診斷] - [回應是否包含tool_calls]: {'tool_calls' in (content or '')}")
+
         if not content:
+            if DEBUG_MODE:
+                log.warning(f"=== [MCP Tool 診斷] - [警告] 模型沒有返回內容")
             return body, {}
 
         try:
+            # 添加JSON提取過程日誌
+            original_content = content
             content = content[content.find("{") : content.rfind("}") + 1]
+
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 診斷] - [JSON提取前]: {original_content}")
+                log.info(f"=== [MCP Tool 診斷] - [JSON提取後]: {content}")
+                log.info(f"=== [MCP Tool 診斷] - [提取是否成功]: {bool(content)}")
+
             if not content:
+                if DEBUG_MODE:
+                    log.warning(f"=== [MCP Tool 診斷] - [警告] 模型回應中無法提取JSON對象")
                 raise Exception("No JSON object found in the response")
 
             result = json.loads(content)
+
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 診斷] - [JSON解析成功]: {result}")
+                log.info(f"=== [MCP Tool 診斷] - [是否包含tool_calls字段]: {'tool_calls' in result}")
+                if 'tool_calls' in result:
+                    log.info(f"=== [MCP Tool 診斷] - [tool_calls內容]: {result['tool_calls']}")
+                    log.info(f"=== [MCP Tool 診斷] - [tool_calls數量]: {len(result['tool_calls'])}")
 
             async def tool_call_handler(tool_call):
                 nonlocal skip_files
@@ -214,9 +255,13 @@ async def chat_completion_tools_handler(
                                 },
                             }
                         )
+                        if DEBUG_MODE:
+                            log.info(f"=== [MCP Tool 開發用] - [呼叫 event_caller 後，回覆的資料] : {tool_result}")
                     else:
                         tool_function = tool["callable"]
                         tool_result = await tool_function(**tool_function_params)
+                        if DEBUG_MODE:
+                            log.info(f"=== [MCP Tool 開發用] - [呼叫 tool_function (mcp 工具) 後，回覆的資料] : {tool_result}")
 
                 except Exception as e:
                     tool_result = str(e)
@@ -230,7 +275,7 @@ async def chat_completion_tools_handler(
                             tool_result.remove(item)
 
                 if isinstance(tool_result, dict) or isinstance(tool_result, list):
-                    tool_result = json.dumps(tool_result, indent=2)
+                    tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
 
                 if isinstance(tool_result, str):
                     tool = tools[tool_function_name]
@@ -271,8 +316,14 @@ async def chat_completion_tools_handler(
             # check if "tool_calls" in result
             if result.get("tool_calls"):
                 for tool_call in result.get("tool_calls"):
+                    if DEBUG_MODE:
+                        log.info(f"=== [MCP Tool 開發用] - [如果 result `有` tool_calls，使用 tool_call 的資料去呼叫 await tool_call_handler(tool_call)]")
+                        log.info(f"=== [MCP Tool 開發用] - tool_call : {tool_call}")
                     await tool_call_handler(tool_call)
             else:
+                if DEBUG_MODE:
+                    log.info(f"=== [MCP Tool 開發用] - [如果 result `沒有` tool_calls，使用 result 的資料去呼叫 await tool_call_handler(result)]")
+                    log.info(f"=== [MCP Tool 開發用] - result : {result}")
                 await tool_call_handler(result)
 
         except Exception as e:
@@ -620,7 +671,7 @@ async def chat_completion_files_handler(
                         request=request,
                         files=files,
                         queries=queries,
-                        embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                        embedding_function=lambda query, prefix, user=None: request.app.state.EMBEDDING_FUNCTION(
                             query, prefix=prefix, user=user
                         ),
                         k=request.app.state.config.TOP_K,
@@ -684,8 +735,21 @@ def apply_params_to_form_data(form_data, model):
 
 async def process_chat_payload(request, form_data, user, metadata, model):
 
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 開發用] - [進入 async def process_chat_payload 函式]")
+
     form_data = apply_params_to_form_data(form_data, model)
     log.debug(f"form_data: {form_data}")
+
+    # Determine if the model is agentic to de-conflict old and new tool handlers
+    model_info = model.get("info")
+    has_tools_or_knowledge = model_info and model_info.get("meta") and (model_info["meta"].get("knowledge") or model_info["meta"].get("toolIds"))
+
+    # peiven 暫時先關閉新走的 agentic 流程
+    has_tools_or_knowledge = False
+
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 開發用] - [是否開啟 agentic 流程] has_tools_or_knowledge : {has_tools_or_knowledge}")
 
     event_emitter = get_event_emitter(metadata)
     event_call = get_event_call(metadata)
@@ -790,100 +854,107 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     except Exception as e:
         raise Exception(f"Error: {e}")
 
-    features = form_data.pop("features", None)
-    if features:
-        if "web_search" in features and features["web_search"]:
-            form_data = await chat_web_search_handler(
-                request, form_data, extra_params, user
-            )
+    # peiven 暫時先關閉新走的 agentic 流程
+    if not has_tools_or_knowledge:
 
-        if "image_generation" in features and features["image_generation"]:
-            form_data = await chat_image_generation_handler(
-                request, form_data, extra_params, user
-            )
+        if DEBUG_MODE:
+            log.info(f"=== [MCP Tool 開發用] - [原本是沒有設定 `知識庫` 或 `mcp 工具`，才進入舊流程，目前先把 agentic 新流程關閉，一律都會走進舊流程]")
 
-        if "code_interpreter" in features and features["code_interpreter"]:
-            form_data["messages"] = add_or_update_user_message(
-                (
-                    request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE
-                    if request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE != ""
-                    else DEFAULT_CODE_INTERPRETER_PROMPT
-                ),
-                form_data["messages"],
-            )
-
-    tool_ids = form_data.pop("tool_ids", None)
-    files = form_data.pop("files", None)
-
-    # Remove files duplicates
-    if files:
-        files = list({json.dumps(f, sort_keys=True): f for f in files}.values())
-
-    metadata = {
-        **metadata,
-        "tool_ids": tool_ids,
-        "files": files,
-    }
-    form_data["metadata"] = metadata
-
-    # Server side tools
-    tool_ids = metadata.get("tool_ids", None)
-    # Client side tools
-    tool_servers = metadata.get("tool_servers", None)
-
-    log.debug(f"{tool_ids=}")
-    log.debug(f"{tool_servers=}")
-
-    tools_dict = {}
-
-    if tool_ids:
-        tools_dict = get_tools(
-            request,
-            tool_ids,
-            user,
-            {
-                **extra_params,
-                "__model__": models[task_model_id],
-                "__messages__": form_data["messages"],
-                "__files__": metadata.get("files", []),
-            },
-        )
-
-    if tool_servers:
-        for tool_server in tool_servers:
-            tool_specs = tool_server.pop("specs", [])
-
-            for tool in tool_specs:
-                tools_dict[tool["name"]] = {
-                    "spec": tool,
-                    "direct": True,
-                    "server": tool_server,
-                }
-
-    if tools_dict:
-        if metadata.get("function_calling") == "native":
-            # If the function calling is native, then call the tools function calling handler
-            metadata["tools"] = tools_dict
-            form_data["tools"] = [
-                {"type": "function", "function": tool.get("spec", {})}
-                for tool in tools_dict.values()
-            ]
-        else:
-            # If the function calling is not native, then call the tools function calling handler
-            try:
-                form_data, flags = await chat_completion_tools_handler(
-                    request, form_data, extra_params, user, models, tools_dict
+        # If the model is not agentic and does not have knowledge, we can remove any files to avoid unnecessary cost
+        features = form_data.pop("features", None)
+        if features:
+            if "web_search" in features and features["web_search"]:
+                form_data = await chat_web_search_handler(
+                    request, form_data, extra_params, user
                 )
-                sources.extend(flags.get("sources", []))
 
-            except Exception as e:
-                log.exception(e)
+            if "image_generation" in features and features["image_generation"]:
+                form_data = await chat_image_generation_handler(
+                    request, form_data, extra_params, user
+                )
 
-    try:
-        form_data, flags = await chat_completion_files_handler(request, form_data, user)
-        sources.extend(flags.get("sources", []))
-    except Exception as e:
-        log.exception(e)
+            if "code_interpreter" in features and features["code_interpreter"]:
+                form_data["messages"] = add_or_update_user_message(
+                    (
+                        request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE
+                        if request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE != ""
+                        else DEFAULT_CODE_INTERPRETER_PROMPT
+                    ),
+                    form_data["messages"],
+                )
+
+        tool_ids = form_data.pop("tool_ids", None)
+        files = form_data.pop("files", None)
+
+        # Remove files duplicates
+        if files:
+            files = list({json.dumps(f, sort_keys=True): f for f in files}.values())
+
+        metadata = {
+            **metadata,
+            "tool_ids": tool_ids,
+            "files": files,
+        }
+        form_data["metadata"] = metadata
+
+        # Server side tools
+        tool_ids = metadata.get("tool_ids", None)
+        # Client side tools
+        tool_servers = metadata.get("tool_servers", None)
+
+        log.debug(f"{tool_ids=}")
+        log.debug(f"{tool_servers=}")
+
+        tools_dict = {}
+        # 從如果有 mcp tool，從 id 去取得 mcp tool 的詳細資料
+        if tool_ids:
+            tools_dict = get_tools(
+                request,
+                tool_ids,
+                user,
+                {
+                    **extra_params,
+                    "__model__": models[task_model_id],
+                    "__messages__": form_data["messages"],
+                    "__files__": metadata.get("files", []),
+                },
+            )
+
+        if tool_servers:
+            for tool_server in tool_servers:
+                tool_specs = tool_server.pop("specs", [])
+
+                for tool in tool_specs:
+                    tools_dict[tool["name"]] = {
+                        "spec": tool,
+                        "direct": True,
+                        "server": tool_server,
+                    }
+
+        if tools_dict:
+            if metadata.get("function_calling") == "native":
+                # If the function calling is native, then call the tools function calling handler
+                metadata["tools"] = tools_dict
+                form_data["tools"] = [
+                    {"type": "function", "function": tool.get("spec", {})}
+                    for tool in tools_dict.values()
+                ]
+            else:
+                # If the function calling is not native, then call the tools function calling handler
+                try:
+                    form_data, flags = await chat_completion_tools_handler(
+                        request, form_data, extra_params, user, models, tools_dict
+                    )
+                    sources.extend(flags.get("sources", []))
+
+                except Exception as e:
+                    log.exception(e)
+
+        try:
+            form_data, flags = await chat_completion_files_handler(request, form_data, user)
+            sources.extend(flags.get("sources", []))
+        except Exception as e:
+            log.exception(e)
 
     # If context is not empty, insert it into the messages
     if len(sources) > 0:

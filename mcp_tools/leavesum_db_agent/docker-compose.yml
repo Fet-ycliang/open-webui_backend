@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  text-to-sql-agent:
+    build: .
+    container_name: leavesum_db_agent
+    env_file:
+      - .env
+    ports:
+      - "8001:8001"
+    # This command is useful for development to auto-reload changes.
+    # For production, the CMD in the Dockerfile is used.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    # The following depends_on is commented out, but useful if you run the DB in the same compose file.
+    # depends_on:
+    #   - postgres-pgvector

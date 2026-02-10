@@ -3,9 +3,7 @@ import logging
 from contextlib import contextmanager
 from typing import Any, Optional
 
-from open_webui.internal.wrappers import register_connection
 from open_webui.env import (
-    OPEN_WEBUI_DIR,
     DATABASE_URL,
     DATABASE_SCHEMA,
     SRC_LOG_LEVELS,
@@ -14,8 +12,7 @@ from open_webui.env import (
     DATABASE_POOL_SIZE,
     DATABASE_POOL_TIMEOUT,
 )
-from peewee_migrate import Router
-from sqlalchemy import Dialect, create_engine, MetaData, types
+from sqlalchemy import Dialect, create_engine, MetaData, types, Unicode
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.pool import QueuePool, NullPool
@@ -26,54 +23,54 @@ log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["DB"])
 
 
+# 定義統一的 Unicode 文字類型，確保跨資料庫兼容性
+class UnicodeText(Unicode):
+    """
+    統一的 Unicode 文字類型，確保在所有資料庫中正確處理中文字符
+    - MS SQL Server: 映射為 NVARCHAR/NTEXT
+    - PostgreSQL: 映射為 VARCHAR/TEXT (UTF-8)
+    - SQLite: 映射為 TEXT (UTF-8)
+    - MySQL: 映射為 VARCHAR/TEXT (utf8mb4)
+    """
+
+    def __init__(self, length=None, **kwargs):
+        super().__init__(length=length, **kwargs)
+
+
 class JSONField(types.TypeDecorator):
-    impl = types.Text
+    impl = UnicodeText
     cache_ok = True
 
     def process_bind_param(self, value: Optional[_T], dialect: Dialect) -> Any:
-        return json.dumps(value)
+        # ensure_ascii=False 確保中文字符以 UTF-8 形式儲存，而不是 Unicode 轉義序列
+        # 例如：儲存 "測試" 而不是 "\\u6e2c\\u8a66"
+        # 這樣可以：
+        # 1. 節省儲存空間（減少約 30-50% 的 JSON 大小）
+        # 2. 提高可讀性（資料庫中直接顯示中文）
+        # 3. 便於除錯和維護
+        return json.dumps(value, ensure_ascii=False)
 
     def process_result_value(self, value: Optional[_T], dialect: Dialect) -> Any:
         if value is not None:
             return json.loads(value)
 
     def copy(self, **kw: Any) -> Self:
-        return JSONField(self.impl.length)
+        return JSONField()
 
     def db_value(self, value):
-        return json.dumps(value)
+        return json.dumps(value, ensure_ascii=False)
 
     def python_value(self, value):
         if value is not None:
             return json.loads(value)
 
 
-# Workaround to handle the peewee migration
-# This is required to ensure the peewee migration is handled before the alembic migration
-def handle_peewee_migration(DATABASE_URL):
-    # db = None
-    try:
-        # Replace the postgresql:// with postgres:// to handle the peewee migration
-        db = register_connection(DATABASE_URL.replace("postgresql://", "postgres://"))
-        migrate_dir = OPEN_WEBUI_DIR / "internal" / "migrations"
-        router = Router(db, logger=log, migrate_dir=migrate_dir)
-        router.run()
-        db.close()
-
-    except Exception as e:
-        log.error(f"Failed to initialize the database connection: {e}")
-        raise
-    finally:
-        # Properly closing the database connection
-        if db and not db.is_closed():
-            db.close()
-
-        # Assert if db connection has been closed
-        assert db.is_closed(), "Database connection is still open."
-
-
-handle_peewee_migration(DATABASE_URL)
-
+# =============================================================================
+# SQLALCHEMY CONFIGURATION
+# =============================================================================
+# This configuration provides database connection and ORM capabilities.
+# Database tables should be created manually before starting the application.
+# =============================================================================
 
 SQLALCHEMY_DATABASE_URL = DATABASE_URL
 if "sqlite" in SQLALCHEMY_DATABASE_URL:
@@ -81,6 +78,22 @@ if "sqlite" in SQLALCHEMY_DATABASE_URL:
         SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
     )
 else:
+    # 為不同資料庫類型配置正確的連接參數
+    connect_args = {}
+
+    if "mssql" in SQLALCHEMY_DATABASE_URL:
+        # MS SQL Server 的正確 Unicode 配置
+        connect_args = {
+            "use_setinputsizes": False,
+            "autocommit": False,
+        }
+    elif "mysql" in SQLALCHEMY_DATABASE_URL:
+        # MySQL 的 Unicode 配置
+        connect_args = {
+            "charset": "utf8mb4",
+            "use_unicode": True,
+        }
+
     if DATABASE_POOL_SIZE > 0:
         engine = create_engine(
             SQLALCHEMY_DATABASE_URL,
@@ -90,10 +103,14 @@ else:
             pool_recycle=DATABASE_POOL_RECYCLE,
             pool_pre_ping=True,
             poolclass=QueuePool,
+            connect_args=connect_args,
         )
     else:
         engine = create_engine(
-            SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, poolclass=NullPool
+            SQLALCHEMY_DATABASE_URL,
+            pool_pre_ping=True,
+            poolclass=NullPool,
+            connect_args=connect_args,
         )
 
 
@@ -106,6 +123,9 @@ Session = scoped_session(SessionLocal)
 
 
 def get_session():
+    """
+    Get a database session for ORM operations.
+    """
     db = SessionLocal()
     try:
         yield db

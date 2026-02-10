@@ -66,6 +66,30 @@ Want to learn more about Open WebUI's features? Check out our [Open WebUI docume
 
 Don't forget to explore our sibling project, [Open WebUI Community](https://openwebui.com/), where you can discover, download, and explore customized Modelfiles. Open WebUI Community offers a wide range of exciting possibilities for enhancing your chat interactions with Open WebUI! 🚀
 
+## ⚙️ Database Configuration
+
+Open WebUI supports SQLite, PostgreSQL, and MS SQL Server. Configure the database connection by setting the `DATABASE_URL` environment variable in your `.env` file or as a Docker environment variable.
+
+### SQLite (Default)
+No configuration is needed. The database will be created at `backend/data/webui.db` inside the container or your local data folder.
+
+### PostgreSQL
+```
+DATABASE_URL=postgresql://user:password@host:port/dbname
+```
+
+### MS SQL Server (New)
+To connect to a Microsoft SQL Server, you need the `pyodbc` driver. 
+
+**For Docker:** The required Microsoft ODBC Driver is included in the Docker image.
+**For Local Development:** You must install the [Microsoft ODBC Driver for SQL Server](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) on your host machine.
+
+The connection string should be in the following format:
+```
+DATABASE_URL=mssql+pyodbc://<user>:<password>@<host>:<port>/<database>?driver=ODBC+Driver+18+for+SQL+Server
+```
+**Important**: The `driver` parameter is crucial and must match the name of the installed ODBC driver.
+
 ## How to Install 🚀
 
 ### Installation via Python pip 🐍

@@ -1,3 +1,4 @@
+import os
 import re
 import uuid
 import time
@@ -49,6 +50,8 @@ from typing import Optional, List
 
 from ssl import CERT_REQUIRED, PROTOCOL_TLS
 
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
+
 if ENABLE_LDAP.value:
     from ldap3 import Server, Connection, NONE, Tls
     from ldap3.utils.conv import escape_filter_chars
@@ -78,9 +81,17 @@ async def get_session_user(
         expires_at = int(time.time()) + int(expires_delta.total_seconds())
 
     token = create_token(
-        data={"id": user.id},
+        # data={"id": user.id},
+        data={"id": user.id, "email": user.email, "name": user.name, "role": user.role},
         expires_delta=expires_delta,
     )
+
+    if DEBUG_MODE:
+        log.info(f"-=== [MCP Tool 開發用] - [get_session_user routers/auths.py jwt_token 的資料] : {token} -------------------------")
+        log.info(f"-=== [MCP Tool 開發用] - [get_session_user routers/auths.py user.id 的資料] : {user.id} -------------------------")
+        log.info(f"-=== [MCP Tool 開發用] - [get_session_user routers/auths.py user.email 的資料] : {user.email} -------------------------")
+        log.info(f"-=== [MCP Tool 開發用] - [get_session_user routers/auths.py user.name 的資料] : {user.name} -------------------------")
+        log.info(f"-=== [MCP Tool 開發用] - [get_session_user routers/auths.py user.role 的資料] : {user.role} -------------------------")
 
     datetime_expires_at = (
         datetime.datetime.fromtimestamp(expires_at, datetime.timezone.utc)
@@ -289,11 +300,19 @@ async def ldap_auth(request: Request, response: Response, form_data: LdapForm):
 
             if user:
                 token = create_token(
-                    data={"id": user.id},
+                    # data={"id": user.id},
+                    data={"id": user.id, "email": user.email, "name": user.name, "role": user.role},
                     expires_delta=parse_duration(
                         request.app.state.config.JWT_EXPIRES_IN
                     ),
                 )
+
+                if DEBUG_MODE:
+                    log.info(f"-=== [MCP Tool 開發用] - [ldap_auth routers/auths.py jwt_token 的資料] : {token} -------------------------")
+                    log.info(f"-=== [MCP Tool 開發用] - [ldap_auth routers/auths.py user.id 的資料] : {user.id} -------------------------")
+                    log.info(f"-=== [MCP Tool 開發用] - [ldap_auth routers/auths.py user.email 的資料] : {user.email} -------------------------")
+                    log.info(f"-=== [MCP Tool 開發用] - [ldap_auth routers/auths.py user.name 的資料] : {user.name} -------------------------")
+                    log.info(f"-=== [MCP Tool 開發用] - [ldap_auth routers/auths.py user.role 的資料] : {user.role} -------------------------")
 
                 # Set the cookie token
                 response.set_cookie(
@@ -379,9 +398,17 @@ async def signin(request: Request, response: Response, form_data: SigninForm):
             expires_at = int(time.time()) + int(expires_delta.total_seconds())
 
         token = create_token(
-            data={"id": user.id},
+            # data={"id": user.id},
+            data={"id": user.id, "email": user.email, "name": user.name, "role": user.role},
             expires_delta=expires_delta,
         )
+
+        if DEBUG_MODE:
+            log.info(f"-=== [MCP Tool 開發用] - [signin routers/auths.py jwt_token 的資料] : {token} -------------------------")
+            log.info(f"-=== [MCP Tool 開發用] - [signin routers/auths.py user.id 的資料] : {user.id} -------------------------")
+            log.info(f"-=== [MCP Tool 開發用] - [signin routers/auths.py user.email 的資料] : {user.email} -------------------------")
+            log.info(f"-=== [MCP Tool 開發用] - [signin routers/auths.py user.name 的資料] : {user.name} -------------------------")
+            log.info(f"-=== [MCP Tool 開發用] - [signin routers/auths.py user.role 的資料] : {user.role} -------------------------")
 
         datetime_expires_at = (
             datetime.datetime.fromtimestamp(expires_at, datetime.timezone.utc)
@@ -481,9 +508,17 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
                 expires_at = int(time.time()) + int(expires_delta.total_seconds())
 
             token = create_token(
-                data={"id": user.id},
+                # data={"id": user.id},
+                data={"id": user.id, "email": user.email, "name": user.name, "role": user.role},
                 expires_delta=expires_delta,
             )
+
+            if DEBUG_MODE:
+                log.info(f"-=== [MCP Tool 開發用] - [signup routers/auths.py jwt_token 的資料] : {token} -------------------------")
+                log.info(f"-=== [MCP Tool 開發用] - [signup routers/auths.py user.id 的資料] : {user.id} -------------------------")
+                log.info(f"-=== [MCP Tool 開發用] - [signup routers/auths.py user.email 的資料] : {user.email} -------------------------")
+                log.info(f"-=== [MCP Tool 開發用] - [signup routers/auths.py user.name 的資料] : {user.name} -------------------------")
+                log.info(f"-=== [MCP Tool 開發用] - [signup routers/auths.py user.role 的資料] : {user.role} -------------------------")
 
             datetime_expires_at = (
                 datetime.datetime.fromtimestamp(expires_at, datetime.timezone.utc)
@@ -595,7 +630,16 @@ async def add_user(form_data: AddUserForm, user=Depends(get_admin_user)):
         )
 
         if user:
-            token = create_token(data={"id": user.id})
+            # token = create_token(data={"id": user.id})
+            token = create_token(data={"id": user.id, "email": user.email, "name": user.name, "role": user.role})
+
+            if DEBUG_MODE:
+                log.info(f"-=== [MCP Tool 開發用] - [add_user routers/auths.py jwt_token 的資料] : {token} -------------------------")
+                log.info(f"-=== [MCP Tool 開發用] - [add_user routers/auths.py user.id 的資料] : {user.id} -------------------------")
+                log.info(f"-=== [MCP Tool 開發用] - [add_user routers/auths.py user.email 的資料] : {user.email} -------------------------")
+                log.info(f"-=== [MCP Tool 開發用] - [add_user routers/auths.py user.name 的資料] : {user.name} -------------------------")
+                log.info(f"-=== [MCP Tool 開發用] - [add_user routers/auths.py user.role 的資料] : {user.role} -------------------------")
+
             return {
                 "token": token,
                 "token_type": "Bearer",
@@ -874,3 +918,72 @@ async def get_api_key(user=Depends(get_current_user)):
         }
     else:
         raise HTTPException(404, detail=ERROR_MESSAGES.API_KEY_NOT_FOUND)
+
+
+
+
+############################
+# Email login
+############################
+
+class GetTokenForm(BaseModel):
+    email: str
+
+@router.post("/getToken", response_model=SessionUserResponse)
+async def get_token(request: Request, response: Response, form_data: GetTokenForm):
+    # 驗證 email 格式
+    if not validate_email_format(form_data.email.lower()):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT
+        )
+
+    # 檢查用戶是否存在（根據 email 查找）
+    user = Users.get_user_by_email(form_data.email.lower())
+    if not user:
+        raise HTTPException(400, detail="用戶不存在")
+
+    # 使用信任頭部認證方式
+    authenticated_user = Auths.authenticate_user_by_trusted_header(form_data.email.lower())
+    if not authenticated_user:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
+
+    expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
+    expires_at = None
+    if expires_delta:
+        expires_at = int(time.time()) + int(expires_delta.total_seconds())
+
+    token = create_token(
+        data={"id": authenticated_user.id},
+        expires_delta=expires_delta,
+    )
+
+    datetime_expires_at = (
+        datetime.datetime.fromtimestamp(expires_at, datetime.timezone.utc)
+        if expires_at
+        else None
+    )
+
+    response.set_cookie(
+        key="token",
+        value=token,
+        expires=datetime_expires_at,
+        httponly=True,
+        samesite=WEBUI_AUTH_COOKIE_SAME_SITE,
+        secure=WEBUI_AUTH_COOKIE_SECURE,
+    )
+
+    user_permissions = get_permissions(
+        authenticated_user.id, request.app.state.config.USER_PERMISSIONS
+    )
+
+    return {
+        "token": token,
+        "token_type": "Bearer",
+        "expires_at": expires_at,
+        "id": authenticated_user.id,
+        "email": authenticated_user.email,
+        "name": authenticated_user.name,
+        "role": authenticated_user.role,
+        "profile_image_url": authenticated_user.profile_image_url,
+        "permissions": user_permissions,
+    }

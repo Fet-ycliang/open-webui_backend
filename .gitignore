@@ -1,4 +1,5 @@
 .DS_Store
+Thumbs.db
 node_modules
 /build
 /.svelte-kit
@@ -293,6 +294,12 @@ dist
 # TernJS port file
 .tern-port
 
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
 
@@ -307,3 +314,11 @@ dist
 cypress/videos
 cypress/screenshots
 .vscode/settings.json
+
+# 排除 site-packages
+site-packages/
+
+bin/
+.python-version
+pyvenv.cfg
+

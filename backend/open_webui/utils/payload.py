@@ -1,3 +1,4 @@
+import os
 from open_webui.utils.task import prompt_template, prompt_variables_template
 from open_webui.utils.misc import (
     add_or_update_system_message,
@@ -6,6 +7,10 @@ from open_webui.utils.misc import (
 from typing import Callable, Optional
 import json
 
+import logging
+log = logging.getLogger(__name__)
+
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 # inplace function: form_data is modified
 def apply_model_system_prompt_to_body(
@@ -207,6 +212,9 @@ def convert_payload_openai_to_ollama(openai_payload: dict) -> dict:
     Returns:
         dict: A modified payload compatible with the Ollama API.
     """
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 開發用] - [進入 def convert_payload_openai_to_ollama 函式]")
+
     ollama_payload = {}
 
     # Mapping basic model and message details
@@ -216,11 +224,19 @@ def convert_payload_openai_to_ollama(openai_payload: dict) -> dict:
     )
     ollama_payload["stream"] = openai_payload.get("stream", False)
 
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 開發用] - [取出 openai_payload 的 model，組裝到 ollama_payload 的 model] model : {ollama_payload['model']}")
+        log.info(f"=== [MCP Tool 開發用] - [使用 openai_payload 的 messages，呼叫 convert_messages_openai_to_ollama 函式，將回傳的資料組裝到 ollama_payload 的 messages] messages : {ollama_payload['messages']}")
+
     if "tools" in openai_payload:
         ollama_payload["tools"] = openai_payload["tools"]
+        if DEBUG_MODE:
+            log.info(f"=== [MCP Tool 開發用] - [取出 openai_payload 的 tools，組裝到 ollama_payload 的 tools] tools : {ollama_payload['tools']}")
 
     if "format" in openai_payload:
         ollama_payload["format"] = openai_payload["format"]
+        if DEBUG_MODE:
+            log.info(f"=== [MCP Tool 開發用] - [取出 openai_payload 的 format，組裝到 ollama_payload 的 format] format : {ollama_payload['format']}")
 
     # If there are advanced parameters in the payload, format them in Ollama's options field
     if openai_payload.get("options"):
@@ -240,11 +256,15 @@ def convert_payload_openai_to_ollama(openai_payload: dict) -> dict:
             del ollama_options[
                 "system"
             ]  # To prevent Ollama warning of invalid option provided
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 開發用] - [取出 openai_payload 的 system，組裝到 ollama_payload 的 system] system : {ollama_payload['system']}")
 
         # Extract keep_alive from options if it exists
         if "keep_alive" in ollama_options:
             ollama_payload["keep_alive"] = ollama_options["keep_alive"]
             del ollama_options["keep_alive"]
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 開發用] - [取出 openai_payload 的 keep_alive，組裝到 ollama_payload 的 keep_alive] keep_alive : {ollama_payload['keep_alive']}")
 
     # If there is the "stop" parameter in the openai_payload, remap it to the ollama_payload.options
     if "stop" in openai_payload:

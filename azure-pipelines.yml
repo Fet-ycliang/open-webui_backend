@@ -1,0 +1,119 @@
+variables:
+  # 新增點：定義您的 Azure Container Registry 名稱
+  AZURE_ACR: "fetdadacr.azurecr.io"
+  # 新增點：定義您的後端映像檔名稱
+  BACKEND_IMAGE_NAME: "fet-genai-backend"
+  isMaster: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
+  # 修改點：使用 or() 函式，讓 isDev 同時適用於 'develop' 和 'dev' 分支
+  isDev: $[eq(variables['Build.SourceBranch'], 'refs/heads/dev')]
+  isStaging: $[eq(variables['Build.SourceBranch'], 'refs/heads/Staging')]
+  PACKAGE_VERSION: "1.0.0"
+
+trigger:
+  # specific branches
+  branches:
+    include:
+      - main
+      - dev
+      - staging
+pool:
+  name: 3901_DAD_T
+resources:
+  repositories:
+    - repository: Codescan
+      type: git
+      name: Codescan/Codescan
+
+stages:
+  - stage: Build
+    displayName: Build GENAI image
+    jobs:
+      - job: build_staging_GENAI_backend_job
+        displayName: Build GENAI Backend job
+        condition: and(succeeded(), eq(variables.isStaging, 'true'))
+        steps:
+          - script: |
+              docker build -f Dockerfile -t $(AZURE_ACR)/$(BACKEND_IMAGE_NAME):latest .
+            displayName: "build FET GenAI backend image"
+          - task: CmdLine@2
+            displayName: "Push staging Image"
+            inputs:
+              script: |
+                docker images
+                docker login $(AZURE_ACR) -u $(AZURE_ACR_USER) -p $(AZURE_ACR_PASSWORD)
+                docker push $(AZURE_ACR)/$(BACKEND_IMAGE_NAME):latest
+          - task: CopyFiles@2
+            inputs:
+              sourceFolder: "$(Build.SourcesDirectory)"
+              contents: "**/deploy-aks/**/?(*.yaml)"
+              targetFolder: "$(Build.ArtifactStagingDirectory)"
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish k8s manifests"
+            inputs:
+              pathToPublish: "$(Build.ArtifactStagingDirectory)"
+              artifactName: "manifests"
+              path: "manifests"
+      - job: build_genai_backend_prod_job
+        displayName: Build genai backend prod job
+        condition: and(succeeded(), eq(variables.isMaster, 'true') )
+        steps:
+          - script: |
+              docker build -t $(AZURE_ACR)/$(BACKEND_IMAGE_NAME):$(PACKAGE_VERSION) .
+          - task: CmdLine@2
+            displayName: "Push genai backend prod Image"
+            inputs:
+              script: |
+                docker images
+                docker login $(AZURE_ACR) -u $(AZURE_ACR_USER) -p $(AZURE_ACR_PASSWORD)
+                docker push $(AZURE_ACR)/$(BACKEND_IMAGE_NAME):$(PACKAGE_VERSION)
+          - task: CopyFiles@2
+            inputs:
+              sourceFolder: "$(Build.SourcesDirectory)"
+              contents: "**/deploy-aks/**/?(*.yaml)"
+              targetFolder: "$(Build.ArtifactStagingDirectory)"
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish k8s manifests"
+            inputs:
+              pathToPublish: "$(Build.ArtifactStagingDirectory)"
+              artifactName: "manifests"
+              path: "manifests"
+  - template: azure-pipeline-code-scan.yaml
+    parameters:
+      SCAN_TYPE: normal
+      COST_CENTER: "3901"
+      CODE_SCAN_POOL: "3711"
+      VERSION: dev
+      PROJ_NAME: "Gen_AI_KM"
+  - stage: ScanLibrary
+    displayName: Scan Library
+    jobs:
+      - job: Python_Dependency_Scan
+        displayName: Python Library Scan
+        condition: or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
+        steps:
+          - script: |
+              echo "Python version:"
+              python3 --version || python --version
+              echo "Installing pip-audit..."
+              python3 -m pip install --user pip-audit || python -m pip install --user pip-audit
+              echo "Running security scan..."
+              python3 -m pip_audit -r backend/requirements.txt --output pip-audit-report.json --format json || true
+            displayName: "Run pip-audit security scan"
+          - task: NexusIqPipelineTask@1
+            displayName: "Nexus IQ Python lib scan"
+            name: ScanLibrary
+            inputs:
+              nexusIqService: "SonaType_Connection"
+              organizationId: "3a20641ab1f747afb4a9577ceedabb2e"
+              applicationId: "Gen_AI_KM"
+              stage: "Build"
+              scanTargets: "**/requirements.txt, **/pyproject.toml"
+  - stage: IOM_Codescan
+    pool:
+      name: $(pool)
+    jobs:
+      - template: templates/IOM_Codescan.yml@Codescan
+        parameters:
+          Scan_Rule: FET Security RuleSet v3
+          CI: 242474 #[ CMDB CI編號 E2E]
+          empNo: 26229 #[ 員工編號 ]

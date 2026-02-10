@@ -86,21 +86,32 @@ def get_tools(
                 for spec in specs:
                     function_name = spec["name"]
 
+                    # 1. 處理工具對工具的 API Key (維持現狀)
+                    tool_api_key = None
                     auth_type = tool_server_connection.get("auth_type", "bearer")
-                    token = None
-
                     if auth_type == "bearer":
-                        token = tool_server_connection.get("key", "")
+                        tool_api_key = tool_server_connection.get("key", "")
                     elif auth_type == "session":
-                        token = request.state.token.credentials
+                        tool_api_key = request.state.token.credentials
 
-                    def make_tool_function(function_name, token, tool_server_data):
+                    # 2. 檢查是否需要額外的使用者 JWT Token
+                    user_jwt_token = None
+                    # 檢查 spec 中是否有我們自訂的 x-security-policy 標籤
+                    if spec.get("x-security-policy") == "requires_user_jwt":
+                        # 這是正確的，從我們在中介軟體中新增的 user_jwt 屬性讀取
+                        if hasattr(request.state, "user_jwt") and request.state.user_jwt:
+                             user_jwt_token = request.state.user_jwt
+
+                    # 3. 動態建立 tool_function，並傳入兩種 token
+                    def make_tool_function(function_name, tool_api_key, user_jwt_token, tool_server_data):
                         async def tool_function(**kwargs):
                             print(
                                 f"Executing tool function {function_name} with params: {kwargs}"
                             )
+                            # 將兩種 token 都傳給 execute_tool_server
                             return await execute_tool_server(
-                                token=token,
+                                tool_api_key=tool_api_key,
+                                user_jwt=user_jwt_token,
                                 url=tool_server_data["url"],
                                 name=function_name,
                                 params=kwargs,
@@ -110,7 +121,7 @@ def get_tools(
                         return tool_function
 
                     tool_function = make_tool_function(
-                        function_name, token, tool_server_data
+                        function_name, tool_api_key, user_jwt_token, tool_server_data
                     )
 
                     callable = get_async_tool_function_and_apply_extra_params(
@@ -414,6 +425,11 @@ def convert_openapi_to_tool_payload(openapi_spec):
                             )
                     elif resolved_schema.get("type") == "array":
                         tool["parameters"] = resolved_schema  # special case for array
+            
+            # Copy any custom 'x-' fields from the operation into the spec
+            for key, value in operation.items():
+                if key.startswith("x-"):
+                    tool[key] = value
 
             tool_payload.append(tool)
 
@@ -507,7 +523,7 @@ async def get_tool_servers_data(
 
 
 async def execute_tool_server(
-    token: str, url: str, name: str, params: Dict[str, Any], server_data: Dict[str, Any]
+    tool_api_key: Optional[str], user_jwt: Optional[str], url: str, name: str, params: Dict[str, Any], server_data: Dict[str, Any]
 ) -> Any:
     error = None
     try:
@@ -570,8 +586,13 @@ async def execute_tool_server(
 
         headers = {"Content-Type": "application/json"}
 
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        # 處理工具對工具的 API Key (維持現狀，使用 Authorization 標頭)
+        if tool_api_key:
+            headers["Authorization"] = f"Bearer {tool_api_key}"
+
+        # 處理使用者的 JWT Token (新增邏輯，使用自訂的 X-User-JWT 標頭)
+        if user_jwt:
+            headers["X-User-JWT"] = f"Bearer {user_jwt}"
 
         async with aiohttp.ClientSession() as session:
             request_method = getattr(session, http_method.lower())

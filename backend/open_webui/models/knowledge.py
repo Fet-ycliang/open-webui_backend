@@ -4,7 +4,7 @@ import time
 from typing import Optional
 import uuid
 
-from open_webui.internal.db import Base, get_db
+from open_webui.internal.db import Base, get_db, UnicodeText
 from open_webui.env import SRC_LOG_LEVELS
 
 from open_webui.models.files import FileMetadataResponse
@@ -14,7 +14,6 @@ from open_webui.models.users import Users, UserResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Column, String, Text, JSON
 
-from open_webui.utils.access_control import has_access
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -30,8 +29,8 @@ class Knowledge(Base):
     id = Column(Text, unique=True, primary_key=True)
     user_id = Column(Text)
 
-    name = Column(Text)
-    description = Column(Text)
+    name = Column(UnicodeText)  # 使用 UnicodeText 處理中文知識庫名稱
+    description = Column(UnicodeText)  # 使用 UnicodeText 處理中文描述
 
     data = Column(JSON, nullable=True)
     meta = Column(JSON, nullable=True)
@@ -146,6 +145,8 @@ class KnowledgeTable:
     def get_knowledge_bases_by_user_id(
         self, user_id: str, permission: str = "write"
     ) -> list[KnowledgeUserModel]:
+        from open_webui.utils.access_control import has_access
+
         knowledge_bases = self.get_knowledge_bases()
         return [
             knowledge_base

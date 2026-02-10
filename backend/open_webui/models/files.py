@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Optional
 
-from open_webui.internal.db import Base, JSONField, get_db
+from open_webui.internal.db import Base, JSONField, get_db, UnicodeText
 from open_webui.env import SRC_LOG_LEVELS
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Column, String, Text, JSON
@@ -21,8 +21,8 @@ class File(Base):
     user_id = Column(String)
     hash = Column(Text, nullable=True)
 
-    filename = Column(Text)
-    path = Column(Text, nullable=True)
+    filename = Column(UnicodeText, nullable=True)  # 使用統一的 UnicodeText 類型
+    path = Column(UnicodeText, nullable=True)  # 使用統一的 UnicodeText 類型
 
     data = Column(JSON, nullable=True)
     meta = Column(JSON, nullable=True)

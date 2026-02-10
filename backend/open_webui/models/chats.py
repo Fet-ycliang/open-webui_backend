@@ -4,7 +4,7 @@ import time
 import uuid
 from typing import Optional
 
-from open_webui.internal.db import Base, get_db
+from open_webui.internal.db import Base, get_db, UnicodeText
 from open_webui.models.tags import TagModel, Tag, Tags
 from open_webui.env import SRC_LOG_LEVELS
 
@@ -26,7 +26,7 @@ class Chat(Base):
 
     id = Column(String, primary_key=True)
     user_id = Column(String)
-    title = Column(Text)
+    title = Column(UnicodeText, nullable=True)  # 使用統一的 UnicodeText 類型
     chat = Column(JSON)
 
     created_at = Column(BigInteger)
@@ -666,6 +666,45 @@ class ChatTable:
                             ]
                         )
                     )
+            elif dialect_name == "mssql":
+                # MS SQL Server specific query using OPENJSON
+                query = query.filter(
+                    (
+                        Chat.title.ilike(
+                            f"%{search_text}%"
+                        )  # Case-insensitive search in title
+                        | text(
+                            """
+                            EXISTS (
+                                SELECT 1
+                                FROM OPENJSON(Chat.chat, '$.messages') WITH (content NVARCHAR(MAX) '$.content') AS message
+                                WHERE LOWER(message.content) LIKE '%' + :search_text + '%'
+                            )
+                            """
+                        )
+                    ).params(search_text=search_text)
+                )
+
+                # Tag filtering for MS SQL Server
+                if "none" in tag_ids:
+                    query = query.filter(text("JSON_VALUE(Chat.meta, '$.tags[0]') IS NULL"))
+                elif tag_ids:
+                    query = query.filter(
+                        and_(
+                            *[
+                                text(
+                                    f"""
+                                    EXISTS (
+                                        SELECT 1
+                                        FROM OPENJSON(Chat.meta, '$.tags')
+                                        WHERE value = :tag_id_{tag_idx}
+                                    )
+                                    """
+                                ).params(**{f"tag_id_{tag_idx}": tag_id})
+                                for tag_idx, tag_id in enumerate(tag_ids)
+                            ]
+                        )
+                    )
             else:
                 raise NotImplementedError(
                     f"Unsupported dialect: {db.bind.dialect.name}"
@@ -750,6 +789,13 @@ class ChatTable:
                         "EXISTS (SELECT 1 FROM json_array_elements_text(Chat.meta->'tags') elem WHERE elem = :tag_id)"
                     )
                 ).params(tag_id=tag_id)
+            elif db.bind.dialect.name == "mssql":
+                # MS SQL Server specific query using OPENJSON
+                query = query.filter(
+                    text(
+                        "EXISTS (SELECT 1 FROM OPENJSON(Chat.meta, '$.tags') WHERE value = :tag_id)"
+                    )
+                ).params(tag_id=tag_id)
             else:
                 raise NotImplementedError(
                     f"Unsupported dialect: {db.bind.dialect.name}"
@@ -802,6 +848,14 @@ class ChatTable:
                 query = query.filter(
                     text(
                         "EXISTS (SELECT 1 FROM json_array_elements_text(Chat.meta->'tags') elem WHERE elem = :tag_id)"
+                    )
+                ).params(tag_id=tag_id)
+
+            elif db.bind.dialect.name == "mssql":
+                # MS SQL Server specific query using OPENJSON
+                query = query.filter(
+                    text(
+                        "EXISTS (SELECT 1 FROM OPENJSON(Chat.meta, '$.tags') WHERE value = :tag_id)"
                     )
                 ).params(tag_id=tag_id)
 

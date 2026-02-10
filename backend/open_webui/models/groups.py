@@ -11,7 +11,7 @@ from open_webui.models.files import FileMetadataResponse
 
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Column, String, Text, JSON, func
+from sqlalchemy import BigInteger, Column, String, Text, JSON, func, text
 
 
 log = logging.getLogger(__name__)
@@ -124,18 +124,37 @@ class GroupTable:
 
     def get_groups_by_member_id(self, user_id: str) -> list[GroupModel]:
         with get_db() as db:
-            return [
-                GroupModel.model_validate(group)
-                for group in db.query(Group)
-                .filter(
-                    func.json_array_length(Group.user_ids) > 0
-                )  # Ensure array exists
-                .filter(
-                    Group.user_ids.cast(String).like(f'%"{user_id}"%')
-                )  # String-based check
-                .order_by(Group.updated_at.desc())
-                .all()
-            ]
+            # 檢查資料庫方言以使用對應的 JSON 函數
+            dialect_name = db.bind.dialect.name
+
+            if dialect_name == "mssql":
+                # MS SQL Server: 使用 JSON_VALUE 和 LEN 函數檢查陣列長度
+                return [
+                    GroupModel.model_validate(group)
+                    for group in db.query(Group)
+                    .filter(
+                        text("LEN(ISNULL(user_ids, '[]')) > 2")  # 確保不是空陣列 []
+                    )
+                    .filter(
+                        Group.user_ids.cast(String).like(f'%"{user_id}"%')
+                    )  # String-based check
+                    .order_by(Group.updated_at.desc())
+                    .all()
+                ]
+            else:
+                # PostgreSQL 和其他支援 json_array_length 的資料庫
+                return [
+                    GroupModel.model_validate(group)
+                    for group in db.query(Group)
+                    .filter(
+                        func.json_array_length(Group.user_ids) > 0
+                    )  # Ensure array exists
+                    .filter(
+                        Group.user_ids.cast(String).like(f'%"{user_id}"%')
+                    )  # String-based check
+                    .order_by(Group.updated_at.desc())
+                    .all()
+                ]
 
     def get_group_by_id(self, id: str) -> Optional[GroupModel]:
         try:

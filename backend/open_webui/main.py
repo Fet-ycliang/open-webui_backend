@@ -899,6 +899,15 @@ async def check_url(request: Request, call_next):
         request.headers.get("Authorization")
     )
 
+    # 攔截原始的 token 字串，並將它存入一個新的、安全的 request.state.user_jwt 屬性中，作為後續如果要使用完整 token 的時候可以從 request.state.user_jwt 取得
+    if request.state.token:
+        # request.state.token.credentials 就是原始的 JWT 字串
+        request.state.user_jwt = request.state.token.credentials
+    else:
+        request.state.user_jwt = None
+
+    print(f"-=== [MCP Tool 開發用] - [check_url request.state.user_jwt 的資料] : {request.state.user_jwt} -------------------------")
+
     request.state.enable_api_key = app.state.config.ENABLE_API_KEY
     response = await call_next(request)
     process_time = int(time.time()) - start_time
@@ -1155,6 +1164,7 @@ async def chat_completion(
             request, response, form_data, user, metadata, model, events, tasks
         )
     except Exception as e:
+        log.exception(e)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),

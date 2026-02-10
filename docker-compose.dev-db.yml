@@ -1,0 +1,16 @@
+services:
+  postgres-pgvector:
+    image: ankane/pgvector:v0.5.1
+    container_name: open_webui_dev_postgres
+    environment:
+      POSTGRES_DB: open_webui_db
+      POSTGRES_USER: c360user
+      POSTGRES_PASSWORD: 1qaz@WSX # 請替換成您自己的高強度密碼
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres_dev_data:/var/lib/postgresql/data # 將資料保存在專案根目錄下的 data/postgres_dev_data 資料夾
+    restart: unless-stopped
+
+volumes:
+  postgres_dev_data:

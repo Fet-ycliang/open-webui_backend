@@ -1,0 +1,22 @@
+# 與主系統 backend/requirements.txt 完全一致的套件配置
+fastapi==0.115.7
+uvicorn[standard]==0.34.0
+pydantic==2.10.6
+python-multipart==0.0.20
+sqlalchemy==2.0.38
+psycopg2-binary==2.9.9
+python-dotenv
+
+# JWT處理 - 與主系統相同
+PyJWT[crypto]==2.10.1
+python-jose==3.4.0
+
+# LangChain相關套件 - 與原版本保持一致
+langchain==0.3.19
+langchain-openai
+langchain-community==0.3.18
+langchain-core
+langgraph
+
+# 其他必要套件
+typing-extensions

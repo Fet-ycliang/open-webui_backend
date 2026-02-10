@@ -20,6 +20,10 @@ elif VECTOR_DB == "elasticsearch":
     from open_webui.retrieval.vector.dbs.elasticsearch import ElasticsearchClient
 
     VECTOR_DB_CLIENT = ElasticsearchClient()
+elif VECTOR_DB == "azure_ai_search":
+    from open_webui.retrieval.vector.dbs.azure_ai_search import AzureAISearchClient
+
+    VECTOR_DB_CLIENT = AzureAISearchClient()
 else:
     from open_webui.retrieval.vector.dbs.chroma import ChromaClient
 

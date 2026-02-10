@@ -1,10 +1,14 @@
 import json
+import os
 from uuid import uuid4
 from open_webui.utils.misc import (
     openai_chat_chunk_message_template,
     openai_chat_completion_message_template,
 )
+import logging
+log = logging.getLogger(__name__)
 
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 def convert_ollama_tool_call_to_openai(tool_calls: dict) -> dict:
     openai_tool_calls = []
@@ -81,6 +85,9 @@ def convert_ollama_usage_to_openai(data: dict) -> dict:
 
 
 def convert_response_ollama_to_openai(ollama_response: dict) -> dict:
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 開發用] - [進入 def convert_response_ollama_to_openai 函式]")
+
     model = ollama_response.get("model", "ollama")
     message_content = ollama_response.get("message", {}).get("content", "")
     tool_calls = ollama_response.get("message", {}).get("tool_calls", None)
@@ -100,6 +107,8 @@ def convert_response_ollama_to_openai(ollama_response: dict) -> dict:
 
 
 async def convert_streaming_response_ollama_to_openai(ollama_streaming_response):
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 開發用] - [進入 async def convert_streaming_response_ollama_to_openai 函式]")
     async for data in ollama_streaming_response.body_iterator:
         data = json.loads(data)
 

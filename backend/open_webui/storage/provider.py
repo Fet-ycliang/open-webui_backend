@@ -75,12 +75,19 @@ class LocalStorageProvider(StorageProvider):
     @staticmethod
     def delete_file(file_path: str) -> None:
         """Handles deletion of the file from local storage."""
-        filename = file_path.split("/")[-1]
-        file_path = f"{UPLOAD_DIR}/{filename}"
+        # 使用完整的 file_path，而不是重新組合路徑
         if os.path.isfile(file_path):
             os.remove(file_path)
+            log.info(f"Successfully deleted file: {file_path}")
         else:
-            log.warning(f"File {file_path} not found in local storage.")
+            # 如果直接路徑不存在，嘗試檔名方式（向後相容）
+            filename = file_path.split("/")[-1]
+            fallback_path = f"{UPLOAD_DIR}/{filename}"
+            if os.path.isfile(fallback_path):
+                os.remove(fallback_path)
+                log.info(f"Successfully deleted file using fallback path: {fallback_path}")
+            else:
+                log.warning(f"File not found in local storage: {file_path} or {fallback_path}")
 
     @staticmethod
     def delete_all_files() -> None:

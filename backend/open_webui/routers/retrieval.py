@@ -26,7 +26,7 @@ from pydantic import BaseModel
 import tiktoken
 
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter, TokenTextSplitter
 from langchain_core.documents import Document
 
 from open_webui.models.files import FileModel, Files
@@ -996,7 +996,7 @@ def process_file(
             # Usage: /knowledge/{id}/file/add, /knowledge/{id}/file/update
 
             result = VECTOR_DB_CLIENT.query(
-                collection_name=f"file-{file.id}", filter={"file_id": file.id}
+                collection_name=collection_name, filter={"file_id": file.id}
             )
 
             if result is not None and len(result.ids[0]) > 0:
@@ -1077,6 +1077,19 @@ def process_file(
 
         hash = calculate_sha256_string(text_content)
         Files.update_file_hash_by_id(file.id, hash)
+
+        # Check for knowledge base upload context and skip initial indexing if applicable
+        referer = request.headers.get("referer")
+        if form_data.collection_name is None and referer and "/knowledge/" in referer:
+            log.info(
+                "Knowledge base upload detected. Skipping initial indexing, waiting for second call with collection_name."
+            )
+            return {
+                "status": True,
+                "collection_name": None,
+                "filename": file.filename,
+                "content": text_content,
+            }
 
         if not request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL:
             try:
@@ -1621,11 +1634,14 @@ def query_collection_handler(
     user=Depends(get_verified_user),
 ):
     try:
+        log.info(
+            f"Performing RAG query with embedding model: {request.app.state.config.RAG_EMBEDDING_MODEL}"
+        )
         if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH:
             return query_collection_with_hybrid_search(
                 collection_names=form_data.collection_names,
                 queries=[form_data.query],
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                embedding_function=lambda query, prefix, user=None: request.app.state.EMBEDDING_FUNCTION(
                     query, prefix=prefix, user=user
                 ),
                 k=form_data.k if form_data.k else request.app.state.config.TOP_K,
@@ -1637,15 +1653,17 @@ def query_collection_handler(
                     if form_data.r
                     else request.app.state.config.RELEVANCE_THRESHOLD
                 ),
+                user=user,  # 新增用戶信息
             )
         else:
             return query_collection(
                 collection_names=form_data.collection_names,
                 queries=[form_data.query],
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                embedding_function=lambda query, prefix, user=None: request.app.state.EMBEDDING_FUNCTION(
                     query, prefix=prefix, user=user
                 ),
                 k=form_data.k if form_data.k else request.app.state.config.TOP_K,
+                user=user,  # 新增用戶信息
             )
 
     except Exception as e:

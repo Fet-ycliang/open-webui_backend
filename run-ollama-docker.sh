@@ -8,7 +8,8 @@ read -r -p "Do you want ollama in Docker with GPU support? (y/n): " use_gpu
 docker rm -f ollama || true
 docker pull ollama/ollama:latest
 
-docker_args="-d -v ollama:/root/.ollama -p $host_port:$container_port --name ollama ollama/ollama"
+# MacOS users 可能會需要增加 --privileged 參數
+docker_args="--privileged -d -v ollama:/root/.ollama -p $host_port:$container_port --name ollama ollama/ollama"
 
 if [ "$use_gpu" = "y" ]; then
     docker_args="--gpus=all $docker_args"

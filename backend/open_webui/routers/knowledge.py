@@ -372,6 +372,47 @@ def add_file_to_knowledge_by_id(
         data = knowledge.data or {}
         file_ids = data.get("file_ids", [])
 
+        # Check for existing files with the same filename in this knowledge base
+        existing_files = Files.get_files_by_ids(file_ids)
+        duplicate_file = None
+        for existing_file in existing_files:
+            if existing_file.filename == file.filename:
+                duplicate_file = existing_file
+                break
+
+        # If duplicate found, remove the old file first
+        if duplicate_file:
+            log.info(f"Found duplicate filename '{file.filename}' in knowledge base {id}. Removing old file {duplicate_file.id}")
+            
+            # Remove old file's vector data
+            try:
+                VECTOR_DB_CLIENT.delete(
+                    collection_name=id, filter={"file_id": duplicate_file.id}
+                )
+                # Also delete individual file collection if exists
+                file_collection = f"file-{duplicate_file.id}"
+                if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection):
+                    VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
+                log.info(f"Successfully deleted vector data for duplicate file {duplicate_file.id}")
+            except Exception as e:
+                log.error(f"Failed to delete vector data for duplicate file {duplicate_file.id}: {e}")
+            
+            # Delete old physical file
+            if duplicate_file.path:
+                try:
+                    Storage.delete_file(duplicate_file.path)
+                    log.info(f"Successfully deleted physical file: {duplicate_file.path}")
+                except Exception as e:
+                    log.error(f"Failed to delete physical file {duplicate_file.path}: {e}")
+            
+            # Remove old file from knowledge base file_ids list
+            if duplicate_file.id in file_ids:
+                file_ids.remove(duplicate_file.id)
+            
+            # Delete old file record from database
+            Files.delete_file_by_id(duplicate_file.id)
+            log.info(f"Successfully removed duplicate file {duplicate_file.id} from knowledge base")
+
         if form_data.file_id not in file_ids:
             file_ids.append(form_data.file_id)
             data["file_ids"] = file_ids
@@ -504,25 +545,36 @@ def remove_file_from_knowledge_by_id(
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
+    # Get file path before deletion for physical file removal
+    file_path = file.path if file.path else None
+
     # Remove content from the vector database
     try:
         VECTOR_DB_CLIENT.delete(
             collection_name=knowledge.id, filter={"file_id": form_data.file_id}
         )
+        log.info(f"Successfully deleted vector data for file {form_data.file_id} from knowledge {knowledge.id}")
     except Exception as e:
-        log.debug("This was most likely caused by bypassing embedding processing")
-        log.debug(e)
-        pass
+        log.error(f"Failed to delete vector data for file {form_data.file_id}: {e}")
+        # Don't pass silently, but continue with other cleanup operations
 
     try:
         # Remove the file's collection from vector database
         file_collection = f"file-{form_data.file_id}"
         if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection):
             VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
+            log.info(f"Successfully deleted file collection {file_collection}")
     except Exception as e:
-        log.debug("This was most likely caused by bypassing embedding processing")
-        log.debug(e)
-        pass
+        log.error(f"Failed to delete file collection {file_collection}: {e}")
+        # Don't pass silently, but continue with other cleanup operations
+
+    # Delete physical file if path exists
+    if file_path:
+        try:
+            Storage.delete_file(file_path)
+            log.info(f"Successfully deleted physical file: {file_path}")
+        except Exception as e:
+            log.error(f"Failed to delete physical file {file_path}: {e}")
 
     # Delete file from database
     Files.delete_file_by_id(form_data.file_id)
@@ -587,6 +639,38 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
 
     log.info(f"Deleting knowledge base: {id} (name: {knowledge.name})")
 
+    # Delete all associated physical files first
+    if knowledge.data and knowledge.data.get("file_ids"):
+        file_ids = knowledge.data.get("file_ids", [])
+        log.info(f"Found {len(file_ids)} files to delete from knowledge base {id}")
+        
+        for file_id in file_ids:
+            try:
+                file = Files.get_file_by_id(file_id)
+                if file and file.path:
+                    # Delete physical file
+                    Storage.delete_file(file.path)
+                    log.info(f"Successfully deleted physical file: {file.path}")
+                    
+                    # Delete vector data for this file
+                    try:
+                        VECTOR_DB_CLIENT.delete(
+                            collection_name=id, filter={"file_id": file_id}
+                        )
+                        # Also delete individual file collection if exists
+                        file_collection = f"file-{file_id}"
+                        if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection):
+                            VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
+                    except Exception as e:
+                        log.error(f"Failed to delete vector data for file {file_id}: {e}")
+                    
+                    # Delete file record from database
+                    Files.delete_file_by_id(file_id)
+                    log.info(f"Successfully deleted file record: {file_id}")
+                    
+            except Exception as e:
+                log.error(f"Failed to delete file {file_id}: {e}")
+
     # Get all models
     models = Models.get_all_models()
     log.info(f"Found {len(models)} models to check for knowledge base {id}")
@@ -614,12 +698,13 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
                 )
                 Models.update_model_by_id(model.id, model_form)
 
-    # Clean up vector DB
+    # Clean up vector DB collection
     try:
         VECTOR_DB_CLIENT.delete_collection(collection_name=id)
+        log.info(f"Successfully deleted vector collection: {id}")
     except Exception as e:
-        log.debug(e)
-        pass
+        log.error(f"Failed to delete vector collection {id}: {e}")
+        
     result = Knowledges.delete_knowledge_by_id(id=id)
     return result
 
@@ -648,11 +733,39 @@ async def reset_knowledge_by_id(id: str, user=Depends(get_verified_user)):
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
+    # Delete all associated physical files first
+    if knowledge.data and knowledge.data.get("file_ids"):
+        file_ids = knowledge.data.get("file_ids", [])
+        log.info(f"Resetting knowledge base {id}: found {len(file_ids)} files to delete")
+        
+        for file_id in file_ids:
+            try:
+                file = Files.get_file_by_id(file_id)
+                if file and file.path:
+                    # Delete physical file
+                    Storage.delete_file(file.path)
+                    log.info(f"Successfully deleted physical file during reset: {file.path}")
+                    
+                    # Delete individual file collection if exists
+                    try:
+                        file_collection = f"file-{file_id}"
+                        if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection):
+                            VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
+                    except Exception as e:
+                        log.error(f"Failed to delete file collection {file_collection}: {e}")
+                    
+                    # Delete file record from database
+                    Files.delete_file_by_id(file_id)
+                    log.info(f"Successfully deleted file record during reset: {file_id}")
+                    
+            except Exception as e:
+                log.error(f"Failed to delete file {file_id} during reset: {e}")
+
     try:
         VECTOR_DB_CLIENT.delete_collection(collection_name=id)
+        log.info(f"Successfully deleted vector collection during reset: {id}")
     except Exception as e:
-        log.debug(e)
-        pass
+        log.error(f"Failed to delete vector collection during reset {id}: {e}")
 
     knowledge = Knowledges.update_knowledge_data_by_id(id=id, data={"file_ids": []})
 

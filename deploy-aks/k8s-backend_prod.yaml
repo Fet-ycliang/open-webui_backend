@@ -1,0 +1,109 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: genai-backend
+  namespace: faoai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: genai-backend
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: genai-backend
+    spec:
+      containers:
+        - image: fetdadacr.azurecr.io/fet-genai-backend:1.0.0
+          imagePullPolicy: Always
+          name: genai-backend
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          volumeMounts:
+            - name: localtime
+              mountPath: /etc/localtime
+            - name: timezone
+              mountPath: /etc/timezone
+              subPath: timezone
+            - name: azure-file-share
+              mountPath: /app/data
+          env:
+            - name: VECTOR_DB
+              value: azure_ai_search
+            - name: AZURE_AI_SEARCH_ENDPOINT
+              value: "https://fet-ids-search-prod.search.windows.net"
+            - name: AZURE_AI_SEARCH_API_KEY
+              value: "#{AZURE_AI_SEARCH_API_KEY}#"
+            - name: AZURE_AI_SEARCH_INDEX_PREFIX
+              value: "owui"
+            - name: OPENAI_API_TYPE
+              value: azure
+            - name: OPENAI_API_BASE
+              value: "https://fet-openai-dw.openai.azure.com"
+            - name: OPENAI_API_KEY
+              value: "#{OPENAI_API_KEY}#"
+            - name: OPENAI_API_VERSION
+              value: "2025-01-01-preview"
+            - name: DATABASE_URL
+              value: "#{DATABASE_URL}#"
+            - name: DATABASE_SCHEMA
+              value: "webuimcp"
+            - name: DEBUG_MODE
+              value: "true"
+            - name: DATA_DIR
+              value: /app/data/
+      restartPolicy: Always
+      volumes:
+        - name: localtime
+          hostPath:
+            path: /usr/share/zoneinfo/Asia/Taipei
+            type: ""
+        - name: timezone
+          configMap:
+            name: timezone
+            items:
+              - key: timezone
+                path: timezone
+        - name: azure-file-share
+          persistentVolumeClaim:
+            claimName: azure-file-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    service.beta.kubernetes.io/azure-load-balancer-tcp-idle-timeout: "100"
+  name: genai-backend
+  namespace: faoai
+spec:
+  allocateLoadBalancerNodePorts: true
+  externalTrafficPolicy: Cluster
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+    - IPv4
+  ipFamilyPolicy: SingleStack
+  #loadBalancerIP: x.x.x.x
+  ports:
+    - port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app: genai-backend
+  sessionAffinity: ClientIP
+  type: LoadBalancer

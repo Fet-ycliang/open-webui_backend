@@ -1,8 +1,4 @@
 from typing import Optional, Union, List, Dict, Any
-from open_webui.models.users import Users, UserModel
-from open_webui.models.groups import Groups
-
-
 from open_webui.config import DEFAULT_USER_PERMISSIONS
 import json
 
@@ -34,6 +30,7 @@ def get_permissions(
     If a permission is defined in multiple groups, the most permissive value is used (True > False).
     Permissions are nested in a dict with the permission key as the key and a boolean as the value.
     """
+    from open_webui.models.groups import Groups
 
     def combine_permissions(
         permissions: Dict[str, Any], group_permissions: Dict[str, Any]
@@ -80,6 +77,7 @@ def has_permission(
 
     Permission keys can be hierarchical and separated by dots ('.').
     """
+    from open_webui.models.groups import Groups
 
     def get_permission(permissions: Dict[str, Any], keys: List[str]) -> bool:
         """Traverse permissions dict using a list of keys (from dot-split permission_key)."""
@@ -112,6 +110,8 @@ def has_access(
     type: str = "write",
     access_control: Optional[dict] = None,
 ) -> bool:
+    from open_webui.models.groups import Groups
+
     if access_control is None:
         return type == "read"
 
@@ -129,7 +129,10 @@ def has_access(
 # Get all users with access to a resource
 def get_users_with_access(
     type: str = "write", access_control: Optional[dict] = None
-) -> List[UserModel]:
+) -> List[Any]:
+    from open_webui.models.users import Users
+    from open_webui.models.groups import Groups
+
     if access_control is None:
         return Users.get_users()
 
@@ -145,3 +148,19 @@ def get_users_with_access(
             user_ids_with_access.update(group_user_ids)
 
     return Users.get_users_by_user_ids(list(user_ids_with_access))
+
+
+# Get all users without access to a resource
+def get_users_without_access(
+    type: str = "write", access_control: Optional[dict] = None
+) -> List[Any]:
+    from open_webui.models.users import Users
+
+    if access_control is None:
+        return []
+
+    all_users = Users.get_users()
+    users_with_access = get_users_with_access(type, access_control)
+    users_with_access_ids = {user.id for user in users_with_access}
+
+    return [user for user in all_users if user.id not in users_with_access_ids]

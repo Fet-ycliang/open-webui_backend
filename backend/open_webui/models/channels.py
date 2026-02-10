@@ -4,7 +4,6 @@ import uuid
 from typing import Optional
 
 from open_webui.internal.db import Base, get_db
-from open_webui.utils.access_control import has_access
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Boolean, Column, String, Text, JSON
@@ -96,6 +95,8 @@ class ChannelTable:
     def get_channels_by_user_id(
         self, user_id: str, permission: str = "read"
     ) -> list[ChannelModel]:
+        from open_webui.utils.access_control import has_access
+
         channels = self.get_channels()
         return [
             channel

@@ -7,7 +7,6 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 
 from huggingface_hub import snapshot_download
-from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
@@ -87,6 +86,21 @@ def query_doc(
         if result:
             log.info(f"query_doc:result {result.ids} {result.metadatas}")
 
+            # 簡單的 RAG 搜尋結果日志 - 用於 debug
+            user_name = user.name if user else "Unknown"
+            log.info(f"[RAG_SEARCH] User: {user_name} | Collection: {collection_name} | Found: {len(result.documents[0]) if result.documents and result.documents[0] else 0} documents")
+
+            if result.documents and result.documents[0]:
+                for idx, (doc_id, document) in enumerate(zip(
+                    result.ids[0] if result.ids and result.ids[0] else [],
+                    result.documents[0]
+                )):
+                    # 只顯示文檔 ID 和內容摘要，用於 debug
+                    content_preview = document[:200] + "..." if len(document) > 200 else document
+                    log.info(f"[RAG_DOC_{idx+1}] {doc_id}: {content_preview}")
+            else:
+                log.info(f"[RAG_NO_RESULTS] Collection: {collection_name} - No documents found")
+
         return result
     except Exception as e:
         log.exception(f"Error querying doc {collection_name} with limit {k}: {e}")
@@ -117,35 +131,68 @@ def query_doc_with_hybrid_search(
     k_reranker: int,
     r: float,
 ) -> dict:
+    """
+    This function performs:
+    1. BM25 lexical retrieval
+    2. Vector similarity retrieval
+    3. Weighted ensemble merge
+    4. Explicit reranking (compression)
+    """
     try:
         log.debug(f"query_doc_with_hybrid_search:doc {collection_name}")
+        
+        # BM25 搜索
         bm25_retriever = BM25Retriever.from_texts(
             texts=collection_result.documents[0],
             metadatas=collection_result.metadatas[0],
         )
         bm25_retriever.k = k
+        bm25_results = bm25_retriever.invoke(query)
 
+        # 向量搜索
         vector_search_retriever = VectorSearchRetriever(
             collection_name=collection_name,
             embedding_function=embedding_function,
             top_k=k,
         )
+        vector_results = vector_search_retriever.invoke(query)
 
-        ensemble_retriever = EnsembleRetriever(
-            retrievers=[bm25_retriever, vector_search_retriever], weights=[0.5, 0.5]
-        )
+        # 手動實現 ensemble：合併兩個檢索器的結果
+        all_docs = []
+        doc_scores = {}
+        
+        # BM25 結果 (權重 0.5)
+        for idx, doc in enumerate(bm25_results):
+            doc_key = doc.page_content
+            # BM25 分數使用排名倒數
+            score = (len(bm25_results) - idx) / len(bm25_results) * 0.5
+            if doc_key not in doc_scores:
+                doc_scores[doc_key] = {"doc": doc, "score": score}
+                all_docs.append(doc)
+            else:
+                doc_scores[doc_key]["score"] += score
+        
+        # 向量搜索結果 (權重 0.5)
+        for idx, doc in enumerate(vector_results):
+            doc_key = doc.page_content
+            score = (len(vector_results) - idx) / len(vector_results) * 0.5
+            if doc_key not in doc_scores:
+                doc_scores[doc_key] = {"doc": doc, "score": score}
+                all_docs.append(doc)
+            else:
+                doc_scores[doc_key]["score"] += score
+        
+        # 按分數排序
+        sorted_docs = sorted(all_docs, key=lambda d: doc_scores[d.page_content]["score"], reverse=True)
+        
+        # 手動實現 compression：使用 reranker 重新排序
         compressor = RerankCompressor(
             embedding_function=embedding_function,
             top_n=k_reranker,
             reranking_function=reranking_function,
             r_score=r,
         )
-
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=compressor, base_retriever=ensemble_retriever
-        )
-
-        result = compression_retriever.invoke(query)
+        result = compressor.compress_documents(sorted_docs, query)
 
         distances = [d.metadata.get("score") for d in result]
         documents = [d.page_content for d in result]
@@ -173,6 +220,149 @@ def query_doc_with_hybrid_search(
     except Exception as e:
         log.exception(f"Error querying doc {collection_name} with hybrid search: {e}")
         raise e
+
+from typing import List, Dict
+from rank_bm25 import BM25Okapi
+import numpy as np
+
+
+# def query_doc_with_hybrid_search(
+#     collection_name: str,
+#     collection_result,
+#     query: str,
+#     embedding_function,
+#     k: int,
+#     reranking_function,
+#     k_reranker: int,
+#     r: float,
+# ) -> Dict:
+#     """
+#     Hybrid search implementation compatible with LangChain 1.2.3.
+
+#     This function performs:
+#     1. BM25 lexical retrieval
+#     2. Vector similarity retrieval
+#     3. Weighted ensemble merge
+#     4. Explicit reranking (compression)
+
+#     No LangChain retriever abstractions are used.
+#     """
+
+#     try:
+#         log.debug(f"Hybrid search start: {collection_name}")
+
+#         # ------------------------------------------------------------------
+#         # 1️.BM25 RETRIEVAL (Lexical Search)
+#         # ------------------------------------------------------------------
+#         # Tokenize documents for BM25
+#         documents: List[str] = collection_result.documents[0]
+#         metadatas: List[dict] = collection_result.metadatas[0]
+
+#         tokenized_docs = [doc.split() for doc in documents]
+#         bm25 = BM25Okapi(tokenized_docs)
+
+#         bm25_scores = bm25.get_scores(query.split())
+#         bm25_top_indices = np.argsort(bm25_scores)[::-1][:k]
+
+#         bm25_results = [
+#             {
+#                 "content": documents[i],
+#                 "metadata": {**metadatas[i], "score": float(bm25_scores[i])},
+#             }
+#             for i in bm25_top_indices
+#         ]
+
+#         # ------------------------------------------------------------------
+#         # 2️.VECTOR RETRIEVAL (Semantic Search)
+#         # ------------------------------------------------------------------
+#         vector_retriever = VectorSearchRetriever(
+#             collection_name=collection_name,
+#             embedding_function=embedding_function,
+#             top_k=k,
+#         )
+
+#         vector_docs = vector_retriever.search(query)
+
+#         vector_results = [
+#             {
+#                 "content": doc.page_content,
+#                 "metadata": {**doc.metadata, "score": float(doc.metadata.get("score", 0))},
+#             }
+#             for doc in vector_docs
+#         ]
+
+#         # ------------------------------------------------------------------
+#         # 3️.ENSEMBLE MERGE (Explicit & Auditable)
+#         # ------------------------------------------------------------------
+#         # Weight configuration (previously EnsembleRetriever)
+#         bm25_weight = 0.5
+#         vector_weight = 0.5
+
+#         merged_results = []
+
+#         for item in bm25_results:
+#             item["metadata"]["ensemble_score"] = item["metadata"]["score"] * bm25_weight
+#             merged_results.append(item)
+
+#         for item in vector_results:
+#             item["metadata"]["ensemble_score"] = item["metadata"]["score"] * vector_weight
+#             merged_results.append(item)
+
+#         # Deduplicate by content
+#         unique = {}
+#         for item in merged_results:
+#             key = item["content"]
+#             if key not in unique or item["metadata"]["ensemble_score"] > unique[key]["metadata"]["ensemble_score"]:
+#                 unique[key] = item
+
+#         merged_results = list(unique.values())
+
+#         # ------------------------------------------------------------------
+#         # 4️.RERANK / COMPRESSION (Explicit Security Boundary)
+#         # ------------------------------------------------------------------
+#         reranked = reranking_function(
+#             query=query,
+#             documents=[item["content"] for item in merged_results],
+#             top_n=k_reranker,
+#             score_threshold=r,
+#         )
+
+#         final_results = []
+#         for doc, score in reranked:
+#             final_results.append(
+#                 {
+#                     "content": doc,
+#                     "score": score,
+#                 }
+#             )
+
+#         # ------------------------------------------------------------------
+#         # 5️.SORT & CUT (Deterministic Output)
+#         # ------------------------------------------------------------------
+#         final_results = sorted(
+#             final_results, key=lambda x: x["score"], reverse=True
+#         )[: min(k, k_reranker)]
+
+#         # ------------------------------------------------------------------
+#         # 6️.FORMAT OUTPUT (Backward-Compatible)
+#         # ------------------------------------------------------------------
+#         result = {
+#             "distances": [[item["score"] for item in final_results]],
+#             "documents": [[item["content"] for item in final_results]],
+#             "metadatas": [[{"score": item["score"]} for item in final_results]],
+#         }
+
+#         log.info(
+#             f"Hybrid search result: {len(final_results)} docs returned"
+#         )
+
+#         return result
+
+#     except Exception as e:
+#         log.exception(
+#             f"Hybrid search failed for {collection_name}: {e}"
+#         )
+#         raise
 
 
 def merge_get_results(get_results: list[dict]) -> dict:
@@ -258,27 +448,44 @@ def query_collection(
     queries: list[str],
     embedding_function,
     k: int,
+    user: UserModel = None,
 ) -> dict:
     results = []
+    user_info = f"User: {user.name} (ID: {user.id})" if user else "User: Unknown"
+
+    # 記錄查詢開始
+    log.info(f"[RAG_COLLECTION_QUERY_START] {user_info} | Collections: {collection_names} | Queries: {queries} | K: {k}")
+
     for query in queries:
         log.debug(f"query_collection:query {query}")
-        query_embedding = embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX)
+        log.info(f"[RAG_QUERY_PROCESSING] {user_info} | Processing query: {query}")
+
+        query_embedding = embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user)
         for collection_name in collection_names:
             if collection_name:
                 try:
+                    log.info(f"[RAG_COLLECTION_SEARCH] {user_info} | Searching in collection: {collection_name}")
                     result = query_doc(
                         collection_name=collection_name,
                         k=k,
                         query_embedding=query_embedding,
+                        user=user,
                     )
                     if result is not None:
                         results.append(result.model_dump())
+                        log.info(f"[RAG_COLLECTION_SUCCESS] {user_info} | Successfully retrieved from collection: {collection_name}")
+                    else:
+                        log.warning(f"[RAG_COLLECTION_EMPTY] {user_info} | No results from collection: {collection_name}")
                 except Exception as e:
-                    log.exception(f"Error when querying the collection: {e}")
+                    log.exception(f"[RAG_COLLECTION_ERROR] {user_info} | Error querying collection {collection_name}: {e}")
             else:
-                pass
+                log.warning(f"[RAG_COLLECTION_SKIP] {user_info} | Skipping empty collection name")
 
-    return merge_and_sort_query_results(results, k=k)
+    # 合並結果並記錄最終結果
+    final_result = merge_and_sort_query_results(results, k=k)
+    log.info(f"[RAG_COLLECTION_QUERY_END] {user_info} | Final merged results count: {len(final_result.get('documents', [[]])[0])}")
+
+    return final_result
 
 
 def query_collection_with_hybrid_search(
@@ -289,9 +496,15 @@ def query_collection_with_hybrid_search(
     reranking_function,
     k_reranker: int,
     r: float,
+    user: UserModel = None,
 ) -> dict:
     results = []
     error = False
+    user_info = f"User: {user.name} (ID: {user.id})" if user else "User: Unknown"
+
+    # 記錄混合搜索開始
+    log.info(f"[RAG_HYBRID_SEARCH_START] {user_info} | Collections: {collection_names} | Queries: {queries} | K: {k} | K_reranker: {k_reranker} | R: {r}")
+
     # Fetch collection data once per collection sequentially
     # Avoid fetching the same data multiple times later
     collection_results = {}
@@ -300,19 +513,22 @@ def query_collection_with_hybrid_search(
             log.debug(
                 f"query_collection_with_hybrid_search:VECTOR_DB_CLIENT.get:collection {collection_name}"
             )
+            log.info(f"[RAG_HYBRID_FETCH] {user_info} | Fetching collection: {collection_name}")
             collection_results[collection_name] = VECTOR_DB_CLIENT.get(
                 collection_name=collection_name
             )
+            log.info(f"[RAG_HYBRID_FETCH_SUCCESS] {user_info} | Successfully fetched collection: {collection_name}")
         except Exception as e:
-            log.exception(f"Failed to fetch collection {collection_name}: {e}")
+            log.exception(f"[RAG_HYBRID_FETCH_ERROR] {user_info} | Failed to fetch collection {collection_name}: {e}")
             collection_results[collection_name] = None
 
     log.info(
-        f"Starting hybrid search for {len(queries)} queries in {len(collection_names)} collections..."
+        f"[RAG_HYBRID_PROCESSING] {user_info} | Starting hybrid search for {len(queries)} queries in {len(collection_names)} collections..."
     )
 
     def process_query(collection_name, query):
         try:
+            log.info(f"[RAG_HYBRID_QUERY_PROCESS] {user_info} | Processing query '{query}' in collection '{collection_name}'")
             result = query_doc_with_hybrid_search(
                 collection_name=collection_name,
                 collection_result=collection_results[collection_name],
@@ -323,9 +539,10 @@ def query_collection_with_hybrid_search(
                 k_reranker=k_reranker,
                 r=r,
             )
+            log.info(f"[RAG_HYBRID_QUERY_SUCCESS] {user_info} | Successfully processed query '{query}' in collection '{collection_name}'")
             return result, None
         except Exception as e:
-            log.exception(f"Error when querying the collection with hybrid_search: {e}")
+            log.exception(f"[RAG_HYBRID_QUERY_ERROR] {user_info} | Error when querying collection '{collection_name}' with query '{query}': {e}")
             return None, e
 
     # Prepare tasks for all collections and queries
@@ -336,6 +553,8 @@ def query_collection_with_hybrid_search(
         if collection_results[cn] is not None
         for q in queries
     ]
+
+    log.info(f"[RAG_HYBRID_TASKS] {user_info} | Created {len(tasks)} hybrid search tasks")
 
     with ThreadPoolExecutor() as executor:
         future_results = [executor.submit(process_query, cn, q) for cn, q in tasks]
@@ -348,11 +567,16 @@ def query_collection_with_hybrid_search(
             results.append(result)
 
     if error and not results:
+        log.error(f"[RAG_HYBRID_SEARCH_FAILED] {user_info} | All hybrid search tasks failed")
         raise Exception(
             "Hybrid search failed for all collections. Using Non-hybrid search as fallback."
         )
 
-    return merge_and_sort_query_results(results, k=k)
+    # 合併結果並記錄最終結果
+    final_result = merge_and_sort_query_results(results, k=k)
+    log.info(f"[RAG_HYBRID_SEARCH_END] {user_info} | Hybrid search completed with {len(final_result.get('documents', [[]])[0])} final documents")
+
+    return final_result
 
 
 def get_embedding_function(
@@ -411,15 +635,21 @@ def get_sources_from_files(
     r,
     hybrid_search,
     full_context=False,
+    user=None,  # 新增用戶參數
 ):
     log.debug(
         f"files: {files} {queries} {embedding_function} {reranking_function} {full_context}"
     )
 
+    # 記錄開始處理文件源
+    user_info = f"User: {user.name} (ID: {user.id})" if user else "User: Unknown"
+    log.info(f"[RAG_SOURCES_START] {user_info} | Processing {len(files)} files with {len(queries)} queries")
+
     extracted_collections = []
     relevant_contexts = []
 
     for file in files:
+        log.info(f"[RAG_FILE_PROCESSING] {user_info} | Processing file: {file.get('name', 'Unknown')} | Type: {file.get('type', 'Unknown')}")
 
         context = None
         if file.get("docs"):
@@ -428,12 +658,14 @@ def get_sources_from_files(
                 "documents": [[doc.get("content") for doc in file.get("docs")]],
                 "metadatas": [[doc.get("metadata") for doc in file.get("docs")]],
             }
+            log.info(f"[RAG_FILE_BYPASS] {user_info} | Using provided docs for file: {file.get('name', 'Unknown')}")
         elif file.get("context") == "full":
             # Manual Full Mode Toggle
             context = {
                 "documents": [[file.get("file").get("data", {}).get("content")]],
                 "metadatas": [[{"file_id": file.get("id"), "name": file.get("name")}]],
             }
+            log.info(f"[RAG_FILE_FULL_CONTEXT] {user_info} | Using full context for file: {file.get('name', 'Unknown')}")
         elif (
             file.get("type") != "web_search"
             and request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL
@@ -461,6 +693,7 @@ def get_sources_from_files(
                     "documents": [documents],
                     "metadatas": [metadatas],
                 }
+                log.info(f"[RAG_COLLECTION_BYPASS] {user_info} | Bypassing embedding for collection with {len(file_ids)} files")
 
             elif file.get("id"):
                 file_object = Files.get_file_by_id(file.get("id"))
@@ -477,6 +710,7 @@ def get_sources_from_files(
                             ]
                         ],
                     }
+                    log.info(f"[RAG_FILE_BYPASS] {user_info} | Bypassing embedding for file: {file_object.filename}")
             elif file.get("file").get("data"):
                 context = {
                     "documents": [[file.get("file").get("data", {}).get("content")]],
@@ -484,6 +718,7 @@ def get_sources_from_files(
                         [file.get("file").get("data", {}).get("metadata", {})]
                     ],
                 }
+                log.info(f"[RAG_FILE_DATA_BYPASS] {user_info} | Using file data directly")
         else:
             collection_names = []
             if file.get("type") == "collection":
@@ -501,23 +736,28 @@ def get_sources_from_files(
 
             collection_names = set(collection_names).difference(extracted_collections)
             if not collection_names:
-                log.debug(f"skipping {file} as it has already been extracted")
+                log.debug(f"[RAG_FILE_SKIP] {user_info} | Skipping {file} as it has already been extracted")
                 continue
+
+            log.info(f"[RAG_FILE_COLLECTIONS] {user_info} | Processing collections: {list(collection_names)}")
 
             if full_context:
                 try:
-                    context = get_all_items_from_collections(collection_names)
+                    context = get_all_items_from_collections(list(collection_names))
+                    log.info(f"[RAG_FULL_CONTEXT_SUCCESS] {user_info} | Retrieved full context from collections")
                 except Exception as e:
-                    log.exception(e)
+                    log.exception(f"[RAG_FULL_CONTEXT_ERROR] {user_info} | Error getting full context: {e}")
 
             else:
                 try:
                     context = None
                     if file.get("type") == "text":
                         context = file["content"]
+                        log.info(f"[RAG_TEXT_CONTENT] {user_info} | Using text content directly")
                     else:
                         if hybrid_search:
                             try:
+                                log.info(f"[RAG_HYBRID_SEARCH_ATTEMPT] {user_info} | Attempting hybrid search for collections: {list(collection_names)}")
                                 context = query_collection_with_hybrid_search(
                                     collection_names=collection_names,
                                     queries=queries,
@@ -526,22 +766,24 @@ def get_sources_from_files(
                                     reranking_function=reranking_function,
                                     k_reranker=k_reranker,
                                     r=r,
+                                    user=user,  # 傳遞用戶信息
                                 )
+                                log.info(f"[RAG_HYBRID_SEARCH_SUCCESS] {user_info} | Hybrid search completed successfully")
                             except Exception as e:
-                                log.debug(
-                                    "Error when using hybrid search, using"
-                                    " non hybrid search as fallback."
-                                )
+                                log.debug(f"[RAG_HYBRID_SEARCH_FALLBACK] {user_info} | Error when using hybrid search, using non hybrid search as fallback: {e}")
 
                         if (not hybrid_search) or (context is None):
+                            log.info(f"[RAG_STANDARD_SEARCH_ATTEMPT] {user_info} | Attempting standard search for collections: {list(collection_names)}")
                             context = query_collection(
                                 collection_names=collection_names,
                                 queries=queries,
                                 embedding_function=embedding_function,
                                 k=k,
+                                user=user,  # 傳遞用戶信息
                             )
+                            log.info(f"[RAG_STANDARD_SEARCH_SUCCESS] {user_info} | Standard search completed successfully")
                 except Exception as e:
-                    log.exception(e)
+                    log.exception(f"[RAG_SEARCH_ERROR] {user_info} | Error during search: {e}")
 
             extracted_collections.extend(collection_names)
 
@@ -550,6 +792,7 @@ def get_sources_from_files(
                 del file["data"]
 
             relevant_contexts.append({**context, "file": file})
+            log.info(f"[RAG_CONTEXT_ADDED] {user_info} | Added context for file: {file.get('name', 'Unknown')}")
 
     sources = []
     for context in relevant_contexts:
@@ -566,8 +809,9 @@ def get_sources_from_files(
 
                     sources.append(source)
         except Exception as e:
-            log.exception(e)
+            log.exception(f"[RAG_SOURCE_ERROR] {user_info} | Error processing context: {e}")
 
+    log.info(f"[RAG_SOURCES_END] {user_info} | Processed {len(files)} files, generated {len(sources)} sources")
     return sources
 
 

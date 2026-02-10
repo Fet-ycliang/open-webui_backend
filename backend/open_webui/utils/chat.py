@@ -9,6 +9,7 @@ import json
 import inspect
 import uuid
 import asyncio
+import os
 
 from fastapi import Request, status
 from starlette.responses import Response, StreamingResponse, JSONResponse
@@ -21,7 +22,7 @@ from open_webui.socket.main import (
     get_event_call,
     get_event_emitter,
 )
-from open_webui.functions import generate_function_chat_completion
+from open_webui.functions import generate_function_chat_completion, generate_agentic_chat_completion
 
 from open_webui.routers.openai import (
     generate_chat_completion as generate_openai_chat_completion,
@@ -59,6 +60,7 @@ logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 async def generate_direct_chat_completion(
     request: Request,
@@ -161,6 +163,9 @@ async def generate_chat_completion(
     user: Any,
     bypass_filter: bool = False,
 ):
+    if DEBUG_MODE:
+        log.info(f"=== [MCP Tool 開發用] - [進入 async def generate_chat_completion 函式] form_data : {form_data}")
+
     log.debug(f"generate_chat_completion: {form_data}")
     if BYPASS_MODEL_ACCESS_CONTROL:
         bypass_filter = True
@@ -226,7 +231,7 @@ async def generate_chat_completion(
             if form_data.get("stream") == True:
 
                 async def stream_wrapper(stream):
-                    yield f"data: {json.dumps({'selected_model_id': selected_model_id})}\n\n"
+                    yield f"data: {json.dumps({'selected_model_id': selected_model_id})}\\n\n"
                     async for chunk in stream:
                         yield chunk
 
@@ -248,21 +253,53 @@ async def generate_chat_completion(
                     "selected_model_id": selected_model_id,
                 }
 
+        model_info = model.get("info")
+        has_tools_or_knowledge = model_info and model_info.get("meta") and (
+            model_info["meta"].get("knowledge") or model_info["meta"].get("toolIds")
+        )
+
+        # 暫時先關掉新走的 agentic 流程 peiven
+        has_tools_or_knowledge = False
+
+        if DEBUG_MODE:
+            log.info(f"=== [MCP Tool 開發用] - [是否開啟 agentic 流程] has_tools_or_knowledge : {has_tools_or_knowledge}")
+
+        # First, check for the original "pipe" models to preserve existing functionality.
         if model.get("pipe"):
-            # Below does not require bypass_filter because this is the only route the uses this function and it is already bypassing the filter
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 開發用] - [model 內`有` pipe，使用 await generate_function_chat_completion 函式直接回傳]")
+            log.debug(f"Routing to LEGACY function chat completion for pipe model {model_id}")
             return await generate_function_chat_completion(
                 request, form_data, user=user, models=models
             )
+
+        # peiven 暫時先關閉新走的 agentic 流程
+        # Second, check for the NEW agentic models.
+        elif has_tools_or_knowledge:
+            log.debug(f"Routing to AGENTIC chat completion for model {model_id}")
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 開發用] - [進入 agentic 新流程]")
+            return await generate_agentic_chat_completion(
+                request, form_data, user=user, models=models
+            )
+
         if model.get("owned_by") == "ollama":
             # Using /ollama/api/chat endpoint
             form_data = convert_payload_openai_to_ollama(form_data)
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 開發用] - [model 的 owned_by `是` ollama，使用 form_data 呼叫 def convert_payload_openai_to_ollama 函式後取得的資料] form_data : {form_data}")
             response = await generate_ollama_chat_completion(
                 request=request,
                 form_data=form_data,
                 user=user,
                 bypass_filter=bypass_filter,
             )
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 開發用] - [model 的 owned_by `是` ollama，呼叫 await generate_ollama_chat_completion 函式後取得的資料] response : {response}")
+
             if form_data.get("stream"):
+                if DEBUG_MODE:
+                    log.info(f"=== [MCP Tool 開發用] - [model 的 owned_by `是` ollama，form_data 內`有` stream，使用 response 呼叫 async def convert_streaming_response_ollama_to_openai 函式，並使用 return StreamingResponse 回傳]")
                 response.headers["content-type"] = "text/event-stream"
                 return StreamingResponse(
                     convert_streaming_response_ollama_to_openai(response),
@@ -270,8 +307,12 @@ async def generate_chat_completion(
                     background=response.background,
                 )
             else:
+                if DEBUG_MODE:
+                    log.info(f"=== [MCP Tool 開發用] - [model 的 owned_by `是` ollama，form_data 內`沒有` stream，使用 response 呼叫 async def convert_streaming_response_ollama_to_openai 函式直接回傳]")
                 return convert_response_ollama_to_openai(response)
         else:
+            if DEBUG_MODE:
+                log.info(f"=== [MCP Tool 開發用] - [model 的 owned_by `不是` ollama，使用 async def generate_chat_completion 函式直接回傳]")
             return await generate_openai_chat_completion(
                 request=request,
                 form_data=form_data,

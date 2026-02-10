@@ -1,1 +1,20 @@
-*.sh text eol=lf
+# --- 通用規則 (預設) ---
+# 將所有 Git 認為是 "text" (文字) 的檔案，在提交時都轉換為 LF。
+* text=auto eol=lf
+
+
+# --- 特殊規則 (可選) ---
+# 對於某些已知必須是 LF 的檔案（例如 Shell 腳本、Python 腳本）
+*.sh    text eol=lf
+*.py    text eol=lf
+
+# 對於某些已知必須是 CRLF 的檔案（例如 Windows 批次檔）
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# 明確指定哪些是二進位檔案 (Binary)，Git 不應更動它們的換行符號
+*.png   binary
+*.jpg   binary
+*.zip   binary
+*.dll   binary
+*.exe   binary

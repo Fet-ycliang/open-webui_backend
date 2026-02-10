@@ -1,0 +1,52 @@
+parameters:
+  SCAN_TYPE: normal
+  COST_CENTER: '3901'
+  CODE_SCAN_POOL: '3711'
+  VERSION: dev
+
+stages:
+  - stage: Code_Scan
+    displayName: Code Scan
+    jobs:
+      - job: checkmarx_code_scan
+        timeoutInMinutes: 10
+        condition: or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
+        pool:
+          name: ${{ parameters.CODE_SCAN_POOL }}
+          demands: Checkmarx
+        steps:
+          - script: |
+              echo "Build.RequestedForEmail is $(Build.RequestedForEmail)"
+              echo "Build Repository Name is $(Build.Repository.Name)"
+              echo "Build Repository.LocalPath is $(Build.Repository.LocalPath)"
+              echo "Agent BuildDirectory is $(Agent.BuildDirectory)"
+              echo "Build Repository.Uri is $(Build.Repository.Uri)"
+              echo "SCAN_TYPE is ${{ parameters.SCAN_TYPE }}"
+              echo "VERSION is ${{ parameters.VERSION }}"
+
+              rmdir $(Agent.BuildDirectory)\$(Build.Repository.Name)\$(Build.Repository.Name) /s /q
+              echo D | xcopy /y /e $(Build.Repository.LocalPath) $(Agent.BuildDirectory)\$(Build.Repository.Name)\$(Build.Repository.Name)
+              rmdir C:\Checkmarx\CxScan\codes\$(Build.Repository.Name) /s /q
+              echo D | xcopy /y /e ..\$(Build.Repository.Name) C:\Checkmarx\CxScan\codes
+
+              cd ..
+              move /y $(Build.Repository.Name) C:\Checkmarx\CxScan\codes                   
+              curl --request POST --header "Content-Type: application/json" --data ^
+              "{\"formId\":\"IDS_$(Build.BuildNumber)\", ^
+              \"repoName\":\"$(Build.Repository.Name)\", ^
+              \"srcRepo\":\"$(Build.Repository.Uri)\", ^
+              \"srcTag\":\"${{ parameters.VERSION }}\", ^
+              \"scanType\":\"${{ parameters.SCAN_TYPE }}\", ^
+              \"costCenter\":\"${{ parameters.COST_CENTER }}\", ^
+              \"email\":\"$(Build.RequestedForEmail)\"}" http://127.0.0.1:8083/user/scan
+              echo ^
+              "{\"formId\":\"IDS_$(Build.BuildNumber)\", ^
+              \"repoName\":\"$(Build.Repository.Name)\", ^
+              \"srcRepo\":\"$(Build.Repository.Uri)\", ^
+              \"srcTag\":\"%VERSION%\", ^
+              \"scanType\":\"${{ parameters.SCAN_TYPE }}\", ^
+              \"costCenter\":\"${{ parameters.COST_CENTER }}\", ^
+              \"email\":\"$(Build.RequestedForEmail)\"}"
+
+            displayName: "scan source code"
+            name: scanSourceCode
